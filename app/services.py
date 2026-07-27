@@ -6,6 +6,10 @@ from app.config import get_settings
 from app.models import KaspiProduct, RiskAssessment
 
 
+class XAIServiceError(RuntimeError):
+    """Raised when xAI cannot produce a usable structured assessment."""
+
+
 def evaluate_hard_filters(product: KaspiProduct) -> tuple[bool, list[str]]:
     s = get_settings()
     reasons: list[str] = []
@@ -26,20 +30,22 @@ def evaluate_hard_filters(product: KaspiProduct) -> tuple[bool, list[str]]:
 
 async def assess_risk(product: KaspiProduct) -> RiskAssessment:
     s = get_settings()
-    if not s.xai_api_key:
-        raise RuntimeError("XAI_API_KEY не задан")
-    client = AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1")
+    if not s.xai_configured:
+        raise XAIServiceError("XAI_API_KEY не задан")
     prompt = (
         "Оцени товар для импорта и перепродажи в Казахстане. Верни строго JSON без Markdown: "
         '{"score":1-10,"verdict":"...","risks":["..."],"checks":["..."]}. '
         "score 10 означает наибольший риск. Не давай юридических гарантий. "
         f"Товар: {product.title}. Цена: {product.price_kzt} KZT."
     )
-    response = await client.chat.completions.create(
-        model=s.xai_model,
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-    )
-    return RiskAssessment.model_validate(json.loads(response.choices[0].message.content or "{}"))
-
+    try:
+        async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
+            response = await client.chat.completions.create(
+                model=s.xai_model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+        return RiskAssessment.model_validate(json.loads(response.choices[0].message.content or "{}"))
+    except Exception as exc:  # SDK, transport, invalid JSON, and schema failures.
+        raise XAIServiceError("xAI не вернул корректную оценку рисков") from exc

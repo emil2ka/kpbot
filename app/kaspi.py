@@ -6,7 +6,7 @@ error for manual review rather than retrying aggressively.
 """
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 from bs4 import BeautifulSoup
@@ -72,6 +72,5 @@ async def fetch_product(url: str) -> KaspiProduct:
         seller_count=_number(seller_match.group(1)) if seller_match else None,
         rating=float(aggregate["ratingValue"]) if aggregate.get("ratingValue") else None,
         image_url=image,
-        scraped_at=datetime.utcnow(),
+        scraped_at=datetime.now(timezone.utc),
     )
-

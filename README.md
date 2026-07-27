@@ -18,7 +18,7 @@ uvicorn app.main:app --reload
 
 Для этого проекта используй Python 3.13 (он указан в `.python-version`).
 
-Открой `http://127.0.0.1:8000/docs` и вызови `POST /api/v1/kaspi/scan`:
+Открой `http://127.0.0.1:8000/docs`. Если задан `APP_API_KEY`, передай его в заголовке `X-API-Key`, затем вызови `POST /api/v1/kaspi/scan`:
 
 ```json
 {
@@ -33,7 +33,7 @@ uvicorn app.main:app --reload
 2. **xAI**: отзови ключ, который был опубликован в чате, создай новый и укажи его только как `XAI_API_KEY`. Модель — `grok-4.3`.
 3. **Render**: загрузи проект в приватный GitHub-репозиторий → New → Blueprint → выбери репозиторий. `render.yaml` создаст web service; секреты введи в панели Render.
 
-Render Blueprints берёт конфигурацию из `render.yaml`, а web service должен слушать `$PORT`; проект уже настроен под это. См. [документацию Render](https://render.com/docs/blueprint-spec).
+`/health` показывает только статус подключения сервисов без раскрытия секретов. Render Blueprints берёт конфигурацию из `render.yaml`, а web service должен слушать `$PORT`; проект уже настроен под это. См. [документацию Render](https://render.com/docs/blueprint-spec).
 
 ## Следующая итерация
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -11,7 +11,7 @@ class KaspiProduct(BaseModel):
     seller_count: int | None = None
     rating: float | None = None
     image_url: HttpUrl | None = None
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ScanRequest(BaseModel):
@@ -31,4 +31,3 @@ class ScanResult(BaseModel):
     passes_hard_filters: bool
     filter_reasons: list[str]
     ai_assessment: RiskAssessment | None = None
-

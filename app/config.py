@@ -15,8 +15,15 @@ class Settings(BaseSettings):
     min_reviews: int = 15
     max_sellers: int = 8
 
+    @property
+    def supabase_configured(self) -> bool:
+        return bool(self.supabase_url and self.supabase_service_role_key)
+
+    @property
+    def xai_configured(self) -> bool:
+        return bool(self.xai_api_key)
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
