@@ -174,6 +174,10 @@ from app.models import (
 from app.procurement import generate_procurement_sheet
 
 
+from app.cargo_label import CargoLabelRequest, CargoLabelResult, generate_cargo_label
+from app.niche_finder import NicheTrendsResponse, find_trending_sourcing_niches
+
+
 @app.get("/api/v1/currency/cny-rate")
 async def get_cny_rate() -> dict[str, float]:
     rate = await get_cny_to_kzt_rate()
@@ -188,6 +192,17 @@ async def china_deep_extract(request: ChinaParseRequest, _: None = Depends(requi
 @app.post("/api/v1/china/export-procurement", response_model=ProcurementSheetResult)
 async def export_procurement(items: list[ProcurementItem], _: None = Depends(require_api_key)) -> ProcurementSheetResult:
     return await generate_procurement_sheet(items)
+
+
+@app.post("/api/v1/cargo/generate-label", response_model=CargoLabelResult)
+async def cargo_generate_label(request: CargoLabelRequest, _: None = Depends(require_api_key)) -> CargoLabelResult:
+    return generate_cargo_label(request)
+
+
+@app.get("/api/v1/sourcing/niche-trends", response_model=NicheTrendsResponse)
+async def sourcing_niche_trends(category: str = "все категории", _: None = Depends(require_api_key)) -> NicheTrendsResponse:
+    return await find_trending_sourcing_niches(category)
+
 
 
 @app.post("/api/v1/telegram/webhook", status_code=status.HTTP_204_NO_CONTENT)

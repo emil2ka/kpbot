@@ -130,10 +130,36 @@ async def _send_china_ideas(chat_id: int, request: str) -> bool:
     return True
 
 
+async def _send_niche_trends(chat_id: int) -> None:
+    from app.niche_finder import find_trending_sourcing_niches
+    trends = await find_trending_sourcing_niches()
+    await _send_message(
+        chat_id,
+        f"<b>🔥 Трендовые Ниши и Товары из Китая для Kaspi</b>\n{escape(trends.summary_ru)}\n\n"
+        "Ниже 3 отобраные товарные ниши с высоким ROI и целевыми ценами закупки на 1688:",
+    )
+    for idx, opp in enumerate(trends.opportunities, start=1):
+        text = (
+            f"<b>{idx}. {escape(opp.title_ru)}</b>\n"
+            f"<b>Категория:</b> {escape(opp.category_ru)}\n"
+            f"<b>Продажа на Kaspi:</b> <b>{opp.suggested_sale_price_kzt:,.0f} ₸</b>\n"
+            f"🎯 <b>Целевая закупка (1688):</b> до <b>{opp.target_purchase_cny} CNY</b> (~{int(opp.target_purchase_cny * 72):,} ₸)\n"
+            f"📈 <b>Ожидаемая маржа:</b> <b>{opp.estimated_margin_percent}%</b> (ROI: {opp.estimated_roi_percent}%)\n\n"
+            f"<b>Почему выгодно:</b> {escape(opp.why_promising)}\n"
+            f"<b>Риск:</b> {escape(opp.risk_factor)}"
+        )
+        markup = {"inline_keyboard": [
+            [{"text": "🔎 Искать Фабрику на 1688", "url": opp.direct_1688_url}],
+            [{"text": "💰 Рассчитать юнит-экономику", "callback_data": "profit"}],
+        ]}
+        await _send_message(chat_id, text, reply_markup=markup)
+
+
 async def register_commands() -> None:
     """Expose the stable navigation in Telegram's native menu beside the composer."""
     await _call("setMyCommands", {"commands": [
         {"command": "start", "description": "Начать работу"},
+        {"command": "trends", "description": "🔥 Трендовые Ниши 1688"},
         {"command": "ideas", "description": "Найти идеи товаров"},
         {"command": "check", "description": "Проверить товар Kaspi"},
         {"command": "china", "description": "Найти поставщика"},
@@ -158,6 +184,9 @@ async def handle_update(update: dict[str, Any]) -> None:
             await _send_message(chat_id, "Подбираю 3 товарные гипотезы со стороны Китая…")
             if await _send_china_ideas(chat_id, "Самостоятельно найди компактные небрандовые товары для перепродажи на Kaspi."):
                 return
+        elif callback == "trends":
+            await _send_niche_trends(chat_id)
+            return
         prompts = {
             "check": "Пришли ссылку на товар Kaspi — я покажу карточку с фото, ключевыми словами на китайском для 1688 и первичной оценкой.",
             "china": "Пришли ссылку на 1688, Alibaba, Taobao, Pinduoduo или Tmall. Я распознаю платформу, содам чистую ссылку и сохраню для расчёта юнит-экономики.",
@@ -172,14 +201,19 @@ async def handle_update(update: dict[str, Any]) -> None:
         await _send_message(
             chat_id,
             "<b>Kaspi Sourcing AI</b>\nНапиши задачу своими словами, пришли ссылку Kaspi или ссылку 1688/Taobao/Alibaba. Все действия — в меню рядом с полем ввода.",
-            actions=(("🔎 Проверить товар", "check"), ("🔥 Найти идею", "ideas")),
+            actions=(("🔥 Тренды Ниши", "trends"), ("🔎 Проверить товар", "check")),
         )
         return
 
-    command_callbacks = {"/ideas": "ideas", "/check": "check", "/china": "china", "/cargo": "cargo", "/profit": "profit"}
+    if command == "/trends":
+        await _send_niche_trends(chat_id)
+        return
+
+    command_callbacks = {"/ideas": "ideas", "/check": "check", "/china": "china", "/cargo": "cargo", "/profit": "profit", "/trends": "trends"}
     if command in command_callbacks:
         await handle_update({"callback_query": {"id": update.get("update_id", "command"), "data": command_callbacks[command], "message": message}})
         return
+
 
     if "kaspi.kz" in incoming.lower():
         try:

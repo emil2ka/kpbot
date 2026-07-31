@@ -73,6 +73,36 @@ class TestChinaDeepFeatures(unittest.TestCase):
         self.assertIn("image_search.htm?imageUrl=", url_img)
 
 
+    def test_cargo_label_generation(self):
+        from app.cargo_label import CargoLabelRequest, generate_cargo_label
+
+        req = CargoLabelRequest(
+            consignee_name="Асан Алиев",
+            city="Алматы",
+            cargo_code="KZ-ALM-7788",
+            product_title_zh="儿童保温杯 500ml",
+            carton_number=1,
+            total_cartons=3,
+            quantity_per_carton=50,
+            weight_kg=18.5,
+            is_fragile=True,
+        )
+        res = generate_cargo_label(req)
+        self.assertIn("KAZAKHSTAN CARGO SHIPPING MARK (箱唛)", res.label_text_cn_ru)
+        self.assertIn("KZ-ALM-7788", res.label_text_cn_ru)
+        self.assertIn("易碎物品", res.label_text_cn_ru)
+        self.assertIn("<html", res.html_printable)
+
+    def test_niche_trends_finder(self):
+        from app.niche_finder import find_trending_sourcing_niches
+
+        res = asyncio.run(find_trending_sourcing_niches())
+        self.assertEqual(len(res.opportunities), 3)
+        self.assertGreater(res.opportunities[0].estimated_margin_percent, 30.0)
+        self.assertIn("1688.com", res.opportunities[0].direct_1688_url)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
