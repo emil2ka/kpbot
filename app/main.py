@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 
 from app.config import get_settings
@@ -6,9 +8,16 @@ from app.kaspi import KaspiExtractionError, fetch_product
 from app.economics import calculate_economics, compare_cargo
 from app.models import CargoQuote, CargoQuoteRequest, EconomicsRequest, EconomicsResult, ProductInsight, ScanRequest, ScanResult
 from app.services import XAIServiceError, assess_risk, build_product_insight, evaluate_hard_filters
-from app.telegram import handle_update
+from app.telegram import handle_update, register_commands
 
-app = FastAPI(title="Kaspi Sourcing AI", version="0.2.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await register_commands()
+    yield
+
+
+app = FastAPI(title="Kaspi Sourcing AI", version="0.2.1", lifespan=lifespan)
 
 
 @app.get("/health")
