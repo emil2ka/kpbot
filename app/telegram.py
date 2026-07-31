@@ -6,6 +6,7 @@ import re
 import httpx
 
 from app.china import build_image_search_url, build_search_urls, detect_platform
+from app.china_api import get_china_data_provider
 from app.china_scraper import deep_extract_china_product
 from app.config import get_settings
 from app.database import save_supplier_link
@@ -98,17 +99,33 @@ async def _send_china_ideas(chat_id: int, request: str) -> bool:
         "Это 3 гипотезы. Открой поиск — там уже готовый китайский запрос; после выбора ссылки я сравню её с Kaspi и прибылью.",
     )
     for index, idea in enumerate(research.ideas, start=1):
-        urls = build_search_urls(idea.chinese_keywords)
+        source_result = await get_china_data_provider().search_suppliers(
+            idea.title_ru, idea.chinese_keywords
+        )
+        urls = source_result.search_urls
         text = (
             f"<b>{index}. {escape(idea.title_ru)}</b>\n"
             f"<b>Запрос для Китая:</b> <code>{escape(idea.chinese_keywords)}</code>\n"
             f"<b>Почему смотреть:</b> {escape(idea.why_interesting)}\n"
             f"<b>Проверить:</b> {escape(idea.risk_to_check)}"
         )
-        markup = {"inline_keyboard": [
-            [{"text": "🔎 1688", "url": urls["1688"]}, {"text": "🌐 Alibaba", "url": urls["alibaba"]}],
-            [{"text": "🛍 Taobao", "url": urls["taobao"]}, {"text": "📦 Проверить Kaspi", "callback_data": "check"}],
-        ]}
+        if source_result.live_items:
+            rows = []
+            offer_lines = []
+            for offer in source_result.live_items[:5]:
+                offer_lines.append(
+                    f"• <b>{offer.price_cny:g} ¥</b> · MOQ {offer.moq} · {escape(offer.title[:70])}"
+                )
+                rows.append([{"text": f"{offer.platform} · {offer.price_cny:g} ¥", "url": offer.detail_url}])
+            text += "\n\n<b>Реальные предложения поставщиков:</b>\n" + "\n".join(offer_lines)
+            rows.append([{"text": "📦 Сопоставить с Kaspi", "callback_data": "check"}])
+            markup = {"inline_keyboard": rows}
+        else:
+            text += "\n\n<i>Сейчас показаны точные запросы, не выдуманные цены. Для автоматической выдачи и сравнения нужен подключённый провайдер каталожных данных.</i>"
+            markup = {"inline_keyboard": [
+                [{"text": "🔎 Открыть 1688", "url": urls["1688"]}, {"text": "🌐 Alibaba", "url": urls["alibaba"]}],
+                [{"text": "🛍 Taobao", "url": urls["taobao"]}, {"text": "📦 Проверить Kaspi", "callback_data": "check"}],
+            ]}
         await _send_message(chat_id, text, reply_markup=markup)
     return True
 
