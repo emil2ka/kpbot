@@ -1,12 +1,14 @@
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 
 from app.config import get_settings
 from app.database import DatabaseError, save_scan
 from app.kaspi import KaspiExtractionError, fetch_product
-from app.models import ScanRequest, ScanResult
-from app.services import XAIServiceError, assess_risk, evaluate_hard_filters
+from app.economics import calculate_economics, compare_cargo
+from app.models import CargoQuote, CargoQuoteRequest, EconomicsRequest, EconomicsResult, ProductInsight, ScanRequest, ScanResult
+from app.services import XAIServiceError, assess_risk, build_product_insight, evaluate_hard_filters
+from app.telegram import handle_update
 
-app = FastAPI(title="Kaspi Product Research MVP", version="0.1.0")
+app = FastAPI(title="Kaspi Sourcing AI", version="0.2.0")
 
 
 @app.get("/health")
@@ -17,6 +19,7 @@ async def health() -> dict[str, object]:
         "services": {
             "supabase_configured": settings.supabase_configured,
             "xai_configured": settings.xai_configured,
+            "telegram_configured": settings.telegram_configured,
         },
     }
 
@@ -44,3 +47,31 @@ async def scan_kaspi_product(request: ScanRequest, _: None = Depends(require_api
     except DatabaseError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return result
+
+
+@app.post("/api/v1/kaspi/insight", response_model=ProductInsight)
+async def kaspi_insight(request: ScanRequest, _: None = Depends(require_api_key)) -> ProductInsight:
+    try:
+        product = await fetch_product(str(request.url))
+    except KaspiExtractionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return build_product_insight(product)
+
+
+@app.post("/api/v1/economics/calculate", response_model=EconomicsResult)
+async def economics_calculate(request: EconomicsRequest, _: None = Depends(require_api_key)) -> EconomicsResult:
+    return calculate_economics(request)
+
+
+@app.post("/api/v1/cargo/compare", response_model=list[CargoQuote])
+async def cargo_compare(request: CargoQuoteRequest, _: None = Depends(require_api_key)) -> list[CargoQuote]:
+    return compare_cargo(request)
+
+
+@app.post("/api/v1/telegram/webhook", status_code=status.HTTP_204_NO_CONTENT)
+async def telegram_webhook(request: Request) -> None:
+    settings = get_settings()
+    secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if settings.telegram_webhook_secret and secret != settings.telegram_webhook_secret:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Telegram webhook secret")
+    await handle_update(await request.json())

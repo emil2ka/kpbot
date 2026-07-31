@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
     app_api_key: str | None = None
+    telegram_bot_token: str | None = None
+    telegram_webhook_secret: str | None = None
     min_kaspi_price_kzt: int = 4000
     min_reviews: int = 15
     max_sellers: int = 8
@@ -22,6 +24,10 @@ class Settings(BaseSettings):
     @property
     def xai_configured(self) -> bool:
         return bool(self.xai_api_key)
+
+    @property
+    def telegram_configured(self) -> bool:
+        return bool(self.telegram_bot_token)
 
 
 @lru_cache
