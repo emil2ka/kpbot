@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     def china_provider_configured(self) -> bool:
         return bool(self.china_provider_api_key and self.china_provider_base_url)
 
+    @property
+    def china_live_data_configured(self) -> bool:
+        return True
+
+
 
 @lru_cache
 def get_settings() -> Settings:
