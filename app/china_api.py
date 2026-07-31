@@ -1,5 +1,4 @@
 """Plug-and-play provider architecture for fetching or searching China suppliers (1688, PDD, Taobao)."""
-import os
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -28,6 +27,8 @@ class ChinaSearchResult(BaseModel):
     search_urls: dict[str, str]
     image_search_url: str | None = None
     live_items: list[ChinaSupplierItem] = Field(default_factory=list)
+    live_data_available: bool = False
+    data_note: str = ""
 
 
 class ChinaDataProvider(ABC):
@@ -62,14 +63,20 @@ class LinkSearchProvider(ChinaDataProvider):
             search_urls=search_urls,
             image_search_url=img_url,
             live_items=[],
+            live_data_available=False,
+            data_note=(
+                "Каталожные цены не получены: подключите официальный или лицензированный "
+                "провайдер данных, чтобы бот мог сравнивать реальные предложения."
+            ),
         )
 
 
 class RapidAPI1688Provider(ChinaDataProvider):
-    """Live API provider querying RapidAPI 1688 API when API key is available."""
+    """Live provider for a confirmed RapidAPI-compatible 1688 search endpoint."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
 
     async def search_suppliers(
         self,
@@ -85,10 +92,10 @@ class RapidAPI1688Provider(ChinaDataProvider):
             async with httpx.AsyncClient(timeout=10.0) as client:
                 headers = {
                     "X-RapidAPI-Key": self.api_key,
-                    "X-RapidAPI-Host": "1688-api.p.rapidapi.com",
+                    "X-RapidAPI-Host": self.base_url.removeprefix("https://").removeprefix("http://"),
                 }
                 resp = await client.get(
-                    "https://1688-api.p.rapidapi.com/search",
+                    f"{self.base_url}/search",
                     params={"keywords": keywords_zh, "page": 1, "pageSize": 5},
                     headers=headers,
                 )
@@ -110,11 +117,19 @@ class RapidAPI1688Provider(ChinaDataProvider):
             pass
 
         base_res.live_items = items
+        base_res.live_data_available = bool(items)
+        base_res.data_note = (
+            "Реальные предложения получены от подключённого провайдера."
+            if items else "Провайдер не вернул предложения для этого запроса."
+        )
         return base_res
 
 
 def get_china_data_provider() -> ChinaDataProvider:
-    api_key = os.getenv("CHINA_API_KEY")
-    if api_key:
-        return RapidAPI1688Provider(api_key)
+    # The currently supported adapter is deliberately opt-in.  A key by itself
+    # is not enough: keeping the provider host explicit prevents requests being
+    # sent to an invented or stale marketplace endpoint.
+    settings = get_settings()
+    if settings.china_provider_configured:
+        return RapidAPI1688Provider(settings.china_provider_api_key or "", settings.china_provider_base_url or "")
     return LinkSearchProvider()

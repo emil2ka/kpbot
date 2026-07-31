@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from app.china import build_image_search_url, build_search_urls, canonicalize_url, detect_platform, extract_item_id, extract_price_hint, extract_url_from_text, parse_china_url
+from app.china import build_image_search_url, build_search_urls, canonicalize_url, detect_platform, extract_item_id, extract_price_hint, extract_url_from_text, normalize_search_keywords, parse_china_url
 from app.china_api import get_china_data_provider
 from app.economics import calculate_target_cny_price
 
@@ -54,6 +54,10 @@ class TestChinaIntegration(unittest.TestCase):
     def test_build_image_search_url(self):
         img_url = build_image_search_url("https://resources.cdn-kaspi.kz/img/m/p/h88/h55/12345.jpg")
         self.assertIn("image_search.htm?imageUrl=", img_url)
+
+    def test_normalize_broken_chinese_query(self):
+        self.assertEqual(normalize_search_keywords("&#65533;\ufffd"), "商品 批发")
+        self.assertEqual(normalize_search_keywords("  数据线   批发 "), "数据线 批发")
 
     def test_china_data_provider(self):
         provider = get_china_data_provider()

@@ -5,13 +5,12 @@ import re
 
 import httpx
 
-from app.china import build_image_search_url, build_search_urls, detect_platform, parse_china_url
+from app.china import build_image_search_url, build_search_urls, detect_platform
 from app.china_scraper import deep_extract_china_product
 from app.config import get_settings
 from app.database import save_supplier_link
-from app.economics import calculate_economics, calculate_target_cny_price
+from app.economics import calculate_target_cny_price
 from app.kaspi import KaspiExtractionError, fetch_product
-from app.models import EconomicsRequest
 from app.services import answer_sourcing_question, build_product_insight, generate_china_ideas, generate_chinese_keywords
 
 
@@ -64,7 +63,7 @@ async def _send_product(chat_id: int, product: Any) -> None:
         f"Потенциал: <b>{insight.score}/100 · {insight.verdict}</b>\n"
         f"Цена Kaspi: <b>{price}</b>{target_info}\n"
         f"Отзывы: {product.review_count or 'нет данных'} · Продавцы: {product.seller_count or 'нет данных'}\n\n"
-        f"<b>Запрос 1688 (CN):</b> <code>{escape(keywords_zh)}</code>\n"
+        f"<b>Запрос для Китая:</b> <code>{escape(keywords_zh)}</code>\n"
         f"<b>Что вижу:</b> {insight.summary}\n"
         f"<b>Следующий шаг:</b> {insight.next_step}"
     )
@@ -211,7 +210,7 @@ async def handle_update(update: dict[str, Any]) -> None:
         notes = "\n".join(f"• {escape(note)}" for note in deep_res.data_notes)
 
         reply_text = (
-            f"🇨🇳 <b>Глубокий анализ поставщика ({deep_res.platform})</b>\n"
+        f"🇨🇳 <b>Карточка поставщика ({deep_res.platform})</b>\n"
             f"<b>Товар:</b> {escape(deep_res.title_ru)}\n"
             f"{price_info}{tiers_text}{sku_text}{supplier_info}\n"
             f"<b>Чистая ссылка:</b> {deep_res.canonical_url}\n\n"

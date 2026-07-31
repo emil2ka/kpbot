@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 
 from app.china import build_search_urls, parse_china_url
+from app.china_api import ChinaSearchResult, get_china_data_provider
 from app.config import get_settings
 from app.database import DatabaseError, save_scan
 from app.kaspi import KaspiExtractionError, fetch_product
@@ -50,6 +51,7 @@ async def health() -> dict[str, object]:
             "supabase_configured": settings.supabase_configured,
             "xai_configured": settings.xai_configured,
             "telegram_configured": settings.telegram_configured,
+            "china_live_data_configured": settings.china_provider_configured,
         },
     }
 
@@ -108,6 +110,13 @@ async def china_search_keywords(request: ChinaSearchRequest, _: None = Depends(r
     keywords = await generate_chinese_keywords(request.title_ru)
     urls = build_search_urls(keywords)
     return ChinaSearchResponse(keywords_chinese=keywords, search_urls=urls)
+
+
+@app.post("/api/v1/china/suppliers/search", response_model=ChinaSearchResult)
+async def china_suppliers_search(request: ChinaSearchRequest, _: None = Depends(require_api_key)) -> ChinaSearchResult:
+    """Return real supplier listings only through an explicitly configured provider."""
+    keywords = await generate_chinese_keywords(request.title_ru)
+    return await get_china_data_provider().search_suppliers(request.title_ru, keywords)
 
 
 @app.post("/api/v1/china/compare-supplier", response_model=SupplierComparisonResult)

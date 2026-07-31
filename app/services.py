@@ -2,6 +2,7 @@ import json
 
 from openai import AsyncOpenAI
 
+from app.china import normalize_search_keywords
 from app.config import get_settings
 from app.models import ChinaIdeaResearch, KaspiProduct, ProductInsight, RiskAssessment
 
@@ -143,7 +144,7 @@ async def generate_chinese_keywords(title_ru: str) -> str:
                 temperature=0.2,
             )
         res = response.choices[0].message.content
-        return res.strip() if res else title_ru
+        return normalize_search_keywords(res) if res else title_ru
     except Exception:
         return title_ru
 
@@ -171,6 +172,9 @@ async def generate_china_ideas(request: str) -> ChinaIdeaResearch | None:
                 response_format={"type": "json_object"},
                 temperature=0.45,
             )
-        return ChinaIdeaResearch.model_validate_json(response.choices[0].message.content or "{}")
+        research = ChinaIdeaResearch.model_validate_json(response.choices[0].message.content or "{}")
+        for idea in research.ideas:
+            idea.chinese_keywords = normalize_search_keywords(idea.chinese_keywords)
+        return research
     except Exception:
         return None

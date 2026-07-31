@@ -1,4 +1,5 @@
 """China sourcing integrations: URL parsing, share text extraction, canonicalization, and search link generation for 1688, Pinduoduo, Taobao, JD, Xianyu, Dewu, Vipshop, and Alibaba."""
+import html
 import re
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -98,8 +99,9 @@ def canonicalize_url(platform: str, item_id: str | None, raw_url: str) -> str:
 
 
 def build_search_urls(chinese_keywords: str, max_price_cny: float | None = None) -> dict[str, str]:
-    """Generate direct search URLs for 1688, Pinduoduo, Taobao, JD, Xianyu, Dewu, Alibaba with optional max price filter."""
-    encoded = quote(chinese_keywords.strip())
+    """Generate direct search URLs from a safe, readable China query."""
+    clean_keywords = normalize_search_keywords(chinese_keywords)
+    encoded = quote(clean_keywords)
     urls = {
         "1688": f"https://s.1688.com/selloffer/offer_search.htm?keywords={encoded}",
         "pinduoduo": f"https://mobile.yangkeduo.com/search_result.html?search_key={encoded}",
@@ -116,6 +118,19 @@ def build_search_urls(chinese_keywords: str, max_price_cny: float | None = None)
         urls["pinduoduo"] += f"&max_price={price_str}"
         urls["jd"] += f"&ev=exprice_0-{price_str}"
     return urls
+
+
+def normalize_search_keywords(value: str) -> str:
+    """Remove broken HTML/entity output before it reaches a marketplace URL."""
+    text = html.unescape(str(value or "")).strip()
+    text = text.replace("\ufffd", " ")
+    text = re.sub(r"&#(?:x[0-9a-fA-F]+|\d+);?", " ", text)
+    text = re.sub(r"[<>\[\]{}|]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    han_count = len(re.findall(r"[\u3400-\u9fff]", text))
+    # Do not emit an empty or corrupted search. This fallback is intentionally
+    # broad but valid; the bot labels it as a query for the user to refine.
+    return text if han_count >= 2 else "商品 批发"
 
 
 def build_image_search_url(image_url: str | None) -> str | None:
@@ -171,4 +186,3 @@ async def parse_china_url(raw_text_or_url: str) -> ChinaParseResult:
         extracted_title=title,
         extracted_image_url=image_url,
     )
-

@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     app_api_key: str | None = None
     telegram_bot_token: str | None = None
     telegram_webhook_secret: str | None = None
+    # Optional credentials for a licensed China catalogue-data provider.
+    china_provider_api_key: str | None = None
+    china_provider_base_url: str | None = None
     min_kaspi_price_kzt: int = 4000
     min_reviews: int = 15
     max_sellers: int = 8
@@ -28,6 +31,10 @@ class Settings(BaseSettings):
     @property
     def telegram_configured(self) -> bool:
         return bool(self.telegram_bot_token)
+
+    @property
+    def china_provider_configured(self) -> bool:
+        return bool(self.china_provider_api_key and self.china_provider_base_url)
 
 
 @lru_cache
