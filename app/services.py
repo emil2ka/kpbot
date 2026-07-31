@@ -3,7 +3,7 @@ import json
 from openai import AsyncOpenAI
 
 from app.config import get_settings
-from app.models import KaspiProduct, ProductInsight, RiskAssessment
+from app.models import ChinaIdeaResearch, KaspiProduct, ProductInsight, RiskAssessment
 
 
 class XAIServiceError(RuntimeError):
@@ -119,5 +119,58 @@ async def answer_sourcing_question(question: str) -> str | None:
             )
         answer = response.choices[0].message.content
         return answer.strip() if answer else None
+    except Exception:
+        return None
+
+
+async def generate_chinese_keywords(title_ru: str) -> str:
+    """Translate Russian product title to Chinese e-commerce / B2B search keywords for 1688."""
+    s = get_settings()
+    if not s.xai_configured:
+        return title_ru
+
+    prompt = (
+        "Переведи название товара на китайский язык для оптового поиска на 1688.com. "
+        "Используй популярные китайские торговые термины и ключевые слова (B2B). "
+        "Выдай ТОЛЬКО иероглифы (ключевые слова через пробел), без лишних знаков и объяснений.\n\n"
+        f"Товар: {title_ru}"
+    )
+    try:
+        async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
+            response = await client.chat.completions.create(
+                model=s.xai_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+        res = response.choices[0].message.content
+        return res.strip() if res else title_ru
+    except Exception:
+        return title_ru
+
+
+async def generate_china_ideas(request: str) -> ChinaIdeaResearch | None:
+    """Generate sourcing hypotheses and searchable Chinese queries, never fake market metrics."""
+    s = get_settings()
+    if not s.xai_configured:
+        return None
+    prompt = (
+        "Ты исследователь товаров для перепродажи в Казахстане. Сформируй ровно 3 гипотезы "
+        "товара для поиска у китайских поставщиков. Пользователь может назвать категорию, бюджет, "
+        "целевую маржу или попросить подумать самостоятельно. Выбирай небрандовые, компактные, "
+        "неопасные товары; исключай лекарства, БАДы, детские товары, электронику с батареями и явные бренды. "
+        "Не заявляй о реальном спросе, продажах, ценах или конкуренции: это гипотезы, которые нужно проверить. "
+        "Верни строго JSON: {\"interpretation\":\"...\",\"ideas\":[{\"title_ru\":\"...\","
+        "\"chinese_keywords\":\"только китайские ключевые слова\",\"why_interesting\":\"...\","
+        "\"risk_to_check\":\"...\"}]}.\n\nЗапрос пользователя: " + request
+    )
+    try:
+        async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
+            response = await client.chat.completions.create(
+                model=s.xai_model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.45,
+            )
+        return ChinaIdeaResearch.model_validate_json(response.choices[0].message.content or "{}")
     except Exception:
         return None

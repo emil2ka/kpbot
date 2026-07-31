@@ -104,3 +104,58 @@ class CargoQuote(BaseModel):
     insurance_included: bool
     fit_score: int
     recommendation: str
+
+
+class ChinaParseRequest(BaseModel):
+    url: str
+
+
+class ChinaParseResult(BaseModel):
+    raw_url: str
+    platform: str
+    item_id: str | None = None
+    canonical_url: str
+    extracted_title: str | None = None
+    extracted_image_url: str | None = None
+
+
+class ChinaSearchRequest(BaseModel):
+    title_ru: str
+
+
+class ChinaSearchResponse(BaseModel):
+    keywords_chinese: str
+    search_urls: dict[str, str]
+
+
+class ChinaIdea(BaseModel):
+    title_ru: str
+    chinese_keywords: str
+    why_interesting: str
+    risk_to_check: str
+
+
+class ChinaIdeaResearch(BaseModel):
+    interpretation: str
+    ideas: list[ChinaIdea] = Field(min_length=3, max_length=3)
+
+
+class SupplierComparisonRequest(BaseModel):
+    kaspi_url: HttpUrl
+    supplier_url: HttpUrl
+    unit_price_cny: float = Field(gt=0)
+    quantity: int = Field(default=50, gt=0)
+    cargo_cost_kzt: float = Field(default=30000, ge=0)
+
+
+class SupplierComparisonResult(BaseModel):
+    kaspi_title: str
+    kaspi_price_kzt: float
+    supplier_platform: str
+    supplier_url: str
+    unit_price_cny: float
+    unit_cost_kzt: float
+    profit_per_unit_kzt: float
+    margin_percent: float
+    roi_percent: float
+    recommendation: str

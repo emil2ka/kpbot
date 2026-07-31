@@ -1,4 +1,6 @@
 from app.config import get_settings
+from uuid import UUID
+
 from app.models import ScanResult
 
 
@@ -30,4 +32,39 @@ def save_scan(result: ScanResult) -> bool:
         client.table("kaspi_scans").insert(record).execute()
     except Exception as exc:  # The SDK exposes several transport-specific exceptions.
         raise DatabaseError("Не удалось сохранить результат в Supabase") from exc
+    return True
+
+
+def save_supplier_link(
+    platform: str,
+    raw_url: str,
+    canonical_url: str,
+    item_id: str | None = None,
+    unit_price_cny: float | None = None,
+    minimum_order_quantity: int = 1,
+    weight_kg: float | None = None,
+    notes: str | None = None,
+    scan_id: UUID | None = None,
+) -> bool:
+    s = get_settings()
+    if not s.supabase_configured:
+        return False
+    from supabase import create_client
+
+    client = create_client(s.supabase_url, s.supabase_service_role_key)
+    record = {
+        "platform": platform,
+        "raw_url": raw_url,
+        "canonical_url": canonical_url,
+        "item_id": item_id,
+        "unit_price_cny": unit_price_cny,
+        "minimum_order_quantity": minimum_order_quantity,
+        "weight_kg": weight_kg,
+        "notes": notes,
+        "scan_id": scan_id,
+    }
+    try:
+        client.table("supplier_links").insert(record).execute()
+    except Exception as exc:
+        raise DatabaseError("Не удалось сохранить ссылку поставщика в Supabase") from exc
     return True
