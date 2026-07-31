@@ -51,8 +51,9 @@ async def health() -> dict[str, object]:
             "supabase_configured": settings.supabase_configured,
             "xai_configured": settings.xai_configured,
             "telegram_configured": settings.telegram_configured,
-            "china_live_data_configured": settings.china_provider_configured,
+            "china_live_data_configured": settings.china_live_data_configured,
         },
+
     }
 
 

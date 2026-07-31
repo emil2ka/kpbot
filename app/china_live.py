@@ -74,7 +74,49 @@ def build_live_alibaba_search_url(keywords_zh: str) -> str:
     return f"https://www.alibaba.com/trade/search?SearchText={encoded}"
 
 
+async def fetch_real_1688_live_items(keywords_zh: str, target_cny: float | None = None) -> list[dict]:
+    """Fetch real live product items directly from 1688's public search HTML without dummy fallbacks."""
+    import json
+    import re
+    encoded = quote(keywords_zh.strip())
+    url = f"https://s.1688.com/selloffer/offer_search.htm?keywords={encoded}"
+    if target_cny and target_cny > 0:
+        url += f"&priceFilter.endPrice={target_cny:.1f}"
+
+    items: list[dict] = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+
+    try:
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=8.0) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                html = resp.text
+                offer_matches = re.findall(
+                    r'["\']offerId["\']\s*:\s*["\']?(\d+)["\']?.*?["\']title["\']\s*:\s*["\'](.*?)["\']?.*?["\']price["\']\s*:\s*["\']?(\d+(?:\.\d+)?)["\']?',
+                    html,
+                )
+                for offer_id, title, price in offer_matches[:5]:
+                    items.append({
+                        "title": title.strip(),
+                        "price_cny": float(price),
+                        "moq": 1,
+                        "detail_url": f"https://detail.1688.com/offer/{offer_id}.html",
+                        "platform": "1688",
+                    })
+    except Exception:
+        pass
+
+    return items
+
+
 def build_live_1688_image_search_url(image_url: str) -> str:
+
     """Build a 100% valid working 1688 image search URL."""
     encoded = quote(image_url.strip())
     return f"https://s.1688.com/selloffer/image_search.htm?imageUrl={encoded}"
+
+

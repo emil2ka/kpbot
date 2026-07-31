@@ -133,11 +133,12 @@ from app.china_live import (
     build_live_pdd_search_url,
     build_live_taobao_search_url,
     fetch_1688_live_suggestions,
+    fetch_real_1688_live_items,
 )
 
 
 class SmartSourcingEngineProvider(ChinaDataProvider):
-    """Smart AI Sourcing Engine generating structured candidate supplier offers with 100% verified working URLs."""
+    """Smart Sourcing Provider fetching real live 1688 search items or direct price-filtered search URLs."""
 
     async def search_suppliers(
         self,
@@ -146,18 +147,16 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
         sale_price_kzt: float | None = None,
         image_url: str | None = None,
     ) -> ChinaSearchResult:
-        target_cny = calculate_target_cny_price(sale_price_kzt) if sale_price_kzt else 18.5
-        if target_cny <= 0:
-            target_cny = 18.5
+        target_cny = calculate_target_cny_price(sale_price_kzt) if sale_price_kzt else 0.0
 
         # Query 1688's live suggestion API
         suggestions = await fetch_1688_live_suggestions(keywords_zh)
         active_kw = suggestions[0] if suggestions else keywords_zh
 
-        url_1688_factory = build_live_1688_search_url(active_kw, max_price_cny=target_cny, factory_only=True)
-        url_1688_all = build_live_1688_search_url(active_kw, max_price_cny=target_cny, factory_only=False)
-        url_pdd = build_live_pdd_search_url(active_kw, max_price_cny=target_cny)
-        url_tb = build_live_taobao_search_url(active_kw, max_price_cny=target_cny)
+        url_1688_factory = build_live_1688_search_url(active_kw, max_price_cny=target_cny if target_cny > 0 else None, factory_only=True)
+        url_1688_all = build_live_1688_search_url(active_kw, max_price_cny=target_cny if target_cny > 0 else None, factory_only=False)
+        url_pdd = build_live_pdd_search_url(active_kw, max_price_cny=target_cny if target_cny > 0 else None)
+        url_tb = build_live_taobao_search_url(active_kw, max_price_cny=target_cny if target_cny > 0 else None)
         url_ali = build_live_alibaba_search_url(active_kw)
         img_url = build_live_1688_image_search_url(image_url) if image_url else None
 
@@ -169,51 +168,36 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
             "alibaba": url_ali,
         }
 
-        p1 = round(target_cny * 0.85, 2)
-        p2 = round(target_cny * 0.70, 2)
-        p3 = round(target_cny * 0.60, 2)
+        # Attempt to fetch real items directly from 1688's live public search HTML
+        raw_real_items = await fetch_real_1688_live_items(active_kw, target_cny=target_cny if target_cny > 0 else None)
 
-        items = [
-            ChinaSupplierItem(
-                title=f"{active_kw} (Прямой фабричный опт 1688)",
-                price_cny=p1,
-                moq=10,
-                image_url=image_url,
-                detail_url=url_1688_factory,
-                platform="1688",
-                supplier_name="Yiwu Direct Factory (义乌制造工厂)",
-                rating_score=4.9,
-            ),
-            ChinaSupplierItem(
-                title=f"{active_kw} (Оптовая партия PDD 100+)",
-                price_cny=p2,
-                moq=100,
-                image_url=image_url,
-                detail_url=url_pdd,
-                platform="Pinduoduo",
-                supplier_name="Guangzhou E-Commerce Supplier (广州仓)",
-                rating_score=4.85,
-            ),
-            ChinaSupplierItem(
-                title=f"{active_kw} (Крупная оптовая поставка 1688)",
-                price_cny=p3,
-                moq=500,
-                image_url=image_url,
-                detail_url=url_1688_all,
-                platform="1688",
-                supplier_name="Shenzhen Industrial Producer (深圳产区)",
-                rating_score=4.95,
-            ),
-        ]
+        live_items: list[ChinaSupplierItem] = []
+        for r_item in raw_real_items:
+            live_items.append(
+                ChinaSupplierItem(
+                    title=r_item["title"],
+                    price_cny=r_item["price_cny"],
+                    moq=r_item.get("moq", 1),
+                    detail_url=r_item["detail_url"],
+                    platform="1688",
+                )
+            )
+
+        if live_items:
+            data_note = "Реальные предложения поставщиков 1688 получены в режиме реального времени."
+            available = True
+        else:
+            data_note = "Автоматическая выгрузка списка ограничен фильтрами 1688. Используйте прямые поисковые ссылки ниже."
+            available = False
 
         return ChinaSearchResult(
             target_cny_price=target_cny,
             keywords_chinese=active_kw,
             search_urls=search_urls,
             image_search_url=img_url,
-            live_items=items,
-            live_data_available=True,
-            data_note="Smart AI Sourcing Engine: получены живые ключевые запросы 1688 и проверенные прямые ссылки поставщиков.",
+            live_items=live_items,
+            live_data_available=available,
+            data_note=data_note,
         )
 
 
@@ -222,5 +206,6 @@ def get_china_data_provider() -> ChinaDataProvider:
     if settings.china_provider_configured:
         return RapidAPI1688Provider(settings.china_provider_api_key or "", settings.china_provider_base_url or "")
     return SmartSourcingEngineProvider()
+
 
 
