@@ -58,5 +58,21 @@ class TestChinaDeepFeatures(unittest.TestCase):
         self.assertIn("Бланк закупки", sheet.html_preview)
 
 
+    def test_live_search_urls(self):
+        from app.china_live import build_live_1688_image_search_url, build_live_1688_search_url, build_live_pdd_search_url
+
+        url_1688 = build_live_1688_search_url("保温杯", max_price_cny=30.0, factory_only=True)
+        url_pdd = build_live_pdd_search_url("保温杯", max_price_cny=30.0)
+        url_img = build_live_1688_image_search_url("https://kaspi.kz/photo.jpg")
+
+        self.assertIn("s.1688.com/selloffer/offer_search.htm", url_1688)
+        self.assertIn("feature=gongying", url_1688)
+        self.assertIn("priceFilter.endPrice=30.0", url_1688)
+        self.assertIn("mobile.yangkeduo.com/search_result.html", url_pdd)
+        self.assertIn("max_price=30.0", url_pdd)
+        self.assertIn("image_search.htm?imageUrl=", url_img)
+
+
 if __name__ == "__main__":
     unittest.main()
+
