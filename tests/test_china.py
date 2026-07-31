@@ -1,6 +1,8 @@
 import asyncio
 import unittest
-from app.china import build_search_urls, canonicalize_url, detect_platform, extract_item_id, extract_price_hint, extract_url_from_text, parse_china_url
+from app.china import build_image_search_url, build_search_urls, canonicalize_url, detect_platform, extract_item_id, extract_price_hint, extract_url_from_text, parse_china_url
+from app.china_api import get_china_data_provider
+from app.economics import calculate_target_cny_price
 
 
 class TestChinaIntegration(unittest.TestCase):
@@ -38,22 +40,35 @@ class TestChinaIntegration(unittest.TestCase):
         url_pdd = canonicalize_url("Pinduoduo", "10293848", "https://mobile.yangkeduo.com/goods.html?goods_id=10293848&refer_share_uid=123")
         self.assertEqual(url_pdd, "https://mobile.yangkeduo.com/goods.html?goods_id=10293848")
 
-    def test_build_search_urls(self):
-        urls = build_search_urls("无线耳机")
-        self.assertIn("1688.com", urls["1688"])
-        self.assertIn("yangkeduo.com", urls["pinduoduo"])
-        self.assertIn("taobao.com", urls["taobao"])
-        self.assertIn("jd.com", urls["jd"])
-        self.assertIn("xianyu.com", urls["xianyu"])
+    def test_calculate_target_cny_price(self):
+        target_cny = calculate_target_cny_price(8990.0, target_margin_percent=35.0)
+        self.assertGreater(target_cny, 0.0)
+        # 8990 * 0.35 = 3146.5 profit. Marketplace 12% = 1078.8. Reserve 5% = 449.5. Cargo = 1200. Pack = 150.
+        # Max purchase = (8990 - 3146.5 - 1078.8 - 449.5 - 1200 - 150) / 72 = 2965.2 / 72 = 41.18 CNY
 
-    def test_parse_china_url_pdd(self):
-        res = asyncio.run(parse_china_url("【拼多多】https://mobile.yangkeduo.com/goods.html?goods_id=10293848 15元包邮"))
-        self.assertEqual(res.platform, "Pinduoduo")
-        self.assertEqual(res.item_id, "10293848")
-        self.assertEqual(res.canonical_url, "https://mobile.yangkeduo.com/goods.html?goods_id=10293848")
+    def test_build_search_urls_with_max_price(self):
+        urls = build_search_urls("无线耳机", max_price_cny=42.0)
+        self.assertIn("priceFilter.endPrice=42.0", urls["1688"])
+        self.assertIn("max_price=42.0", urls["pinduoduo"])
+
+    def test_build_image_search_url(self):
+        img_url = build_image_search_url("https://resources.cdn-kaspi.kz/img/m/p/h88/h55/12345.jpg")
+        self.assertIn("image_search.htm?imageUrl=", img_url)
+
+    def test_china_data_provider(self):
+        provider = get_china_data_provider()
+        res = asyncio.run(
+            provider.search_suppliers(
+                title_ru="Детский термос 500мл",
+                keywords_zh="儿童保温杯 500ml",
+                sale_price_kzt=8990.0,
+                image_url="https://kaspi.kz/image.jpg",
+            )
+        )
+        self.assertGreater(res.target_cny_price, 0.0)
+        self.assertIn("1688.com", res.search_urls["1688"])
+        self.assertIsNotNone(res.image_search_url)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-

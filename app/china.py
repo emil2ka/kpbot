@@ -97,10 +97,10 @@ def canonicalize_url(platform: str, item_id: str | None, raw_url: str) -> str:
     return clean_url
 
 
-def build_search_urls(chinese_keywords: str) -> dict[str, str]:
-    """Generate direct search URLs for 1688, Pinduoduo, Taobao, JD, Xianyu, Dewu, Alibaba."""
+def build_search_urls(chinese_keywords: str, max_price_cny: float | None = None) -> dict[str, str]:
+    """Generate direct search URLs for 1688, Pinduoduo, Taobao, JD, Xianyu, Dewu, Alibaba with optional max price filter."""
     encoded = quote(chinese_keywords.strip())
-    return {
+    urls = {
         "1688": f"https://s.1688.com/selloffer/offer_search.htm?keywords={encoded}",
         "pinduoduo": f"https://mobile.yangkeduo.com/search_result.html?search_key={encoded}",
         "taobao": f"https://s.taobao.com/search?q={encoded}",
@@ -109,6 +109,22 @@ def build_search_urls(chinese_keywords: str) -> dict[str, str]:
         "dewu": f"https://www.dewu.com/search?k={encoded}",
         "alibaba": f"https://www.alibaba.com/trade/search?SearchText={encoded}",
     }
+    if max_price_cny and max_price_cny > 0:
+        price_str = f"{max_price_cny:.1f}"
+        urls["1688"] += f"&priceFilter.endPrice={price_str}"
+        urls["taobao"] += f"&end_price={price_str}"
+        urls["pinduoduo"] += f"&max_price={price_str}"
+        urls["jd"] += f"&ev=exprice_0-{price_str}"
+    return urls
+
+
+def build_image_search_url(image_url: str | None) -> str | None:
+    """Generate 1688 visual search URL for a Kaspi product image."""
+    if not image_url:
+        return None
+    encoded_img = quote(str(image_url).strip())
+    return f"https://s.1688.com/selloffer/image_search.htm?imageUrl={encoded_img}"
+
 
 
 async def parse_china_url(raw_text_or_url: str) -> ChinaParseResult:

@@ -31,6 +31,34 @@ def calculate_economics(data: EconomicsRequest) -> EconomicsResult:
     )
 
 
+def calculate_target_cny_price(
+    sale_price_kzt: float,
+    target_margin_percent: float = 35.0,
+    exchange_rate_cny_kzt: float = 72.0,
+    estimated_cargo_per_unit_kzt: float = 1200.0,
+    kaspi_fee_percent: float = 12.0,
+    packaging_per_unit_kzt: float = 150.0,
+    return_reserve_percent: float = 5.0,
+) -> float:
+    """Calculate target CNY purchase price to hit desired net profit margin percentage."""
+    if sale_price_kzt <= 0 or exchange_rate_cny_kzt <= 0:
+        return 0.0
+
+    target_profit_kzt = sale_price_kzt * (target_margin_percent / 100.0)
+    marketplace_fee_kzt = sale_price_kzt * (kaspi_fee_percent / 100.0)
+    return_reserve_kzt = sale_price_kzt * (return_reserve_percent / 100.0)
+
+    # profit = sale_price - unit_cost - marketplace_fee - return_reserve
+    # unit_cost = (cny_price * exchange_rate) + cargo + packaging
+    # cny_price * exchange_rate = sale_price - target_profit - marketplace_fee - return_reserve - cargo - packaging
+    max_cny = (
+        sale_price_kzt - target_profit_kzt - marketplace_fee_kzt - return_reserve_kzt - estimated_cargo_per_unit_kzt - packaging_per_unit_kzt
+    ) / exchange_rate_cny_kzt
+
+    return max(0.0, round(max_cny, 2))
+
+
+
 _CARRIERS = (
     {"carrier": "Cargo Air", "method": "Авиа", "per_kg": 3900, "days": "6–9 дней", "insurance": True},
     {"carrier": "Cargo Auto", "method": "Авто", "per_kg": 2300, "days": "13–18 дней", "insurance": True},

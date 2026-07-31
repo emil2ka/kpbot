@@ -142,6 +142,45 @@ async def china_compare_supplier(request: SupplierComparisonRequest, _: None = D
     )
 
 
+from app.china_scraper import deep_extract_china_product
+from app.currency import get_cny_to_kzt_rate
+from app.models import (
+    CargoQuote,
+    CargoQuoteRequest,
+    ChinaDeepAnalysisResult,
+    ChinaParseRequest,
+    ChinaParseResult,
+    ChinaSearchRequest,
+    ChinaSearchResponse,
+    EconomicsRequest,
+    EconomicsResult,
+    ProductInsight,
+    ProcurementItem,
+    ProcurementSheetResult,
+    ScanRequest,
+    ScanResult,
+    SupplierComparisonRequest,
+    SupplierComparisonResult,
+)
+from app.procurement import generate_procurement_sheet
+
+
+@app.get("/api/v1/currency/cny-rate")
+async def get_cny_rate() -> dict[str, float]:
+    rate = await get_cny_to_kzt_rate()
+    return {"cny_to_kzt": rate}
+
+
+@app.post("/api/v1/china/deep-extract", response_model=ChinaDeepAnalysisResult)
+async def china_deep_extract(request: ChinaParseRequest, _: None = Depends(require_api_key)) -> ChinaDeepAnalysisResult:
+    return await deep_extract_china_product(request.url)
+
+
+@app.post("/api/v1/china/export-procurement", response_model=ProcurementSheetResult)
+async def export_procurement(items: list[ProcurementItem], _: None = Depends(require_api_key)) -> ProcurementSheetResult:
+    return await generate_procurement_sheet(items)
+
+
 @app.post("/api/v1/telegram/webhook", status_code=status.HTTP_204_NO_CONTENT)
 async def telegram_webhook(request: Request) -> None:
     settings = get_settings()

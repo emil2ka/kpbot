@@ -159,3 +159,70 @@ class SupplierComparisonResult(BaseModel):
     margin_percent: float
     roi_percent: float
     recommendation: str
+
+
+class PriceTier(BaseModel):
+    min_quantity: int
+    max_quantity: int | None = None
+    price_cny: float
+
+
+class SKUVariant(BaseModel):
+    variant_id: str
+    name_zh: str
+    name_ru: str | None = None
+    price_cny: float
+    stock: int | None = None
+    image_url: str | None = None
+
+
+class SupplierProfile(BaseModel):
+    company_name: str | None = None
+    location: str | None = None
+    is_verified: bool = False
+    years_in_business: int | None = None
+    rating_score: float | None = None
+
+
+class ChinaDeepAnalysisResult(BaseModel):
+    raw_url: str
+    platform: str
+    item_id: str | None = None
+    canonical_url: str
+    title_zh: str
+    title_ru: str | None = None
+    price_cny: float | None = None
+    price_tiers: list[PriceTier] = Field(default_factory=list)
+    sku_variants: list[SKUVariant] = Field(default_factory=list)
+    images: list[str] = Field(default_factory=list)
+    supplier: SupplierProfile = Field(default_factory=SupplierProfile)
+    estimated_weight_kg: float | None = None
+    data_notes: list[str] = Field(default_factory=list)
+
+
+class ProcurementItem(BaseModel):
+    product_title_ru: str
+    product_title_zh: str
+    supplier_url: str
+    platform: str
+    sku_name: str
+    quantity: int = Field(gt=0)
+    target_price_cny: float = Field(gt=0)
+    total_cny: float = 0.0
+    notes: str | None = None
+
+
+class ProcurementSheetRequest(BaseModel):
+    items: list[ProcurementItem]
+    custom_cny_rate: float | None = Field(default=None, ge=0)
+
+
+class ProcurementSheetResult(BaseModel):
+    total_items_count: int
+    total_quantity: int
+    total_amount_cny: float
+    total_amount_kzt: float
+    exchange_rate: float
+    items: list[ProcurementItem]
+    csv_content: str
+    html_preview: str

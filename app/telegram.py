@@ -5,13 +5,16 @@ import re
 
 import httpx
 
-from app.china import build_search_urls, detect_platform, parse_china_url
+from app.china import build_image_search_url, build_search_urls, detect_platform, parse_china_url
+from app.china_scraper import deep_extract_china_product
 from app.config import get_settings
 from app.database import save_supplier_link
-from app.economics import calculate_economics
+from app.economics import calculate_economics, calculate_target_cny_price
 from app.kaspi import KaspiExtractionError, fetch_product
 from app.models import EconomicsRequest
 from app.services import answer_sourcing_question, build_product_insight, generate_china_ideas, generate_chinese_keywords
+
+
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -49,21 +52,33 @@ async def _send_product(chat_id: int, product: Any) -> None:
     insight = build_product_insight(product)
     price = f"{product.price_kzt:,} ₸" if product.price_kzt else "не прочитана"
 
+    target_cny = calculate_target_cny_price(product.price_kzt) if product.price_kzt else 0.0
+    target_info = f"\n🎯 <b>Цель закупки (маржа 35%):</b> до <b>{target_cny} CNY</b> (~{int(target_cny * 72):,} ₸)\n" if target_cny > 0 else ""
+
     keywords_zh = await generate_chinese_keywords(product.title)
-    search_urls = build_search_urls(keywords_zh)
+    search_urls = build_search_urls(keywords_zh, max_price_cny=target_cny if target_cny > 0 else None)
+    img_search_url = build_image_search_url(str(product.image_url)) if product.image_url else None
 
     text = (
         f"<b>{escape(product.title)}</b>\n\n"
         f"Потенциал: <b>{insight.score}/100 · {insight.verdict}</b>\n"
-        f"Цена Kaspi: <b>{price}</b>\n"
+        f"Цена Kaspi: <b>{price}</b>{target_info}\n"
         f"Отзывы: {product.review_count or 'нет данных'} · Продавцы: {product.seller_count or 'нет данных'}\n\n"
-        f"<b>Поиск 1688 (CN):</b> <code>{escape(keywords_zh)}</code>\n"
+        f"<b>Запрос 1688 (CN):</b> <code>{escape(keywords_zh)}</code>\n"
         f"<b>Что вижу:</b> {insight.summary}\n"
         f"<b>Следующий шаг:</b> {insight.next_step}"
     )
+
+    first_row = [{"text": f"🔎 1688 (до {target_cny}￥)" if target_cny > 0 else "🔎 1688", "url": search_urls["1688"]}]
+    if img_search_url:
+        first_row.append({"text": "🖼 По фото 1688", "url": img_search_url})
+    else:
+        first_row.append({"text": "🛍 Pinduoduo", "url": search_urls["pinduoduo"]})
+
     markup = {
         "inline_keyboard": [
-            [{"text": "🔎 Искать на 1688", "url": search_urls["1688"]}, {"text": "💰 Посчитать прибыль", "callback_data": "profit"}],
+            first_row,
+            [{"text": "🛍 Pinduoduo", "url": search_urls["pinduoduo"]} if img_search_url else {"text": "💰 Посчитать прибыль", "callback_data": "profit"}, {"text": "💰 Посчитать прибыль", "callback_data": "profit"}] if img_search_url else [{"text": "🇨🇳 Добавить ссылку поставщика", "callback_data": "china"}],
             [{"text": "🇨🇳 Добавить ссылку поставщика", "callback_data": "china"}],
         ]
     }
@@ -71,6 +86,7 @@ async def _send_product(chat_id: int, product: Any) -> None:
         await _call("sendPhoto", {"chat_id": chat_id, "photo": str(product.image_url), "caption": text, "parse_mode": "HTML", "reply_markup": markup})
     else:
         await _send_message(chat_id, text, reply_markup=markup)
+
 
 
 async def _send_china_ideas(chat_id: int, request: str) -> bool:
@@ -159,31 +175,60 @@ async def handle_update(update: dict[str, Any]) -> None:
     # Check if incoming text is a Chinese platform link (1688, taobao, alibaba, pinduoduo, tmall, dewu)
     platform = detect_platform(incoming)
     if platform != "Other":
-        parsed = await parse_china_url(incoming)
+        deep_res = await deep_extract_china_product(incoming)
         try:
             save_supplier_link(
-                platform=parsed.platform,
-                raw_url=parsed.raw_url,
-                canonical_url=parsed.canonical_url,
-                item_id=parsed.item_id,
+                platform=deep_res.platform,
+                raw_url=deep_res.raw_url,
+                canonical_url=deep_res.canonical_url,
+                item_id=deep_res.item_id,
+                unit_price_cny=deep_res.price_cny,
             )
         except Exception:
             pass
 
-        title_info = f"\n<b>Название:</b> {escape(parsed.extracted_title)}" if parsed.extracted_title else ""
-        item_id_info = f"\n<b>ID товара:</b> <code>{parsed.item_id}</code>" if parsed.item_id else ""
+        # Build price tiers text
+        tiers_text = ""
+        if deep_res.price_tiers:
+            tiers_list = []
+            for t in deep_res.price_tiers:
+                max_str = f"–{t.max_quantity}" if t.max_quantity else "+"
+                tiers_list.append(f"• {t.min_quantity}{max_str} шт: <b>{t.price_cny} ¥</b>")
+            tiers_text = "\n<b>Оптовые цены (MOQ):</b>\n" + "\n".join(tiers_list) + "\n"
+
+        # Build SKU text
+        sku_text = ""
+        if deep_res.sku_variants:
+            variants_list = [f"• {v.name_ru or v.name_zh} ({v.price_cny} ¥)" for v in deep_res.sku_variants[:3]]
+            sku_text = "\n<b>Варианты (SKU):</b>\n" + "\n".join(variants_list) + "\n"
+
+        supplier_info = ""
+        if deep_res.supplier.company_name:
+            supplier_info = f"\n🏭 <b>Поставщик:</b> {escape(deep_res.supplier.company_name)}"
+            if deep_res.supplier.location:
+                supplier_info += f" ({escape(deep_res.supplier.location)})"
+        price_info = f"<b>Базовая цена:</b> <b>{deep_res.price_cny} CNY</b> (~{int(deep_res.price_cny * 72):,} ₸)\n" if deep_res.price_cny is not None else "<b>Цена:</b> не извлечена — проверь на карточке поставщика.\n"
+        notes = "\n".join(f"• {escape(note)}" for note in deep_res.data_notes)
+
         reply_text = (
-            f"🇨🇳 <b>Ссылка поставщика распознана!</b>\n"
-            f"<b>Платформа:</b> {parsed.platform}{title_info}{item_id_info}\n"
-            f"<b>Чистая ссылка:</b> {parsed.canonical_url}\n\n"
-            f"Для расчёта маржи отправь данные закупки: <i>цена закупки CNY, количество, стоимость карго KZT</i>."
+            f"🇨🇳 <b>Глубокий анализ поставщика ({deep_res.platform})</b>\n"
+            f"<b>Товар:</b> {escape(deep_res.title_ru)}\n"
+            f"{price_info}{tiers_text}{sku_text}{supplier_info}\n"
+            f"<b>Чистая ссылка:</b> {deep_res.canonical_url}\n\n"
+            f"{notes}\n\nОтправь ссылку Kaspi для полного сопоставления маржинальности."
         )
-        await _send_message(
-            chat_id,
-            reply_text,
-            actions=(("💰 Посчитать прибыль", "profit"), ("🔎 Проверить Kaspi", "check")),
-        )
+        markup = {
+            "inline_keyboard": [
+                [{"text": "💰 Расчёт прибыли", "callback_data": "profit"}, {"text": "📦 Проверить Kaspi", "callback_data": "check"}],
+                [{"text": "📄 Бланк закупки для Карго", "callback_data": "profit"}],
+            ]
+        }
+        if deep_res.images:
+            await _call("sendPhoto", {"chat_id": chat_id, "photo": deep_res.images[0], "caption": reply_text, "parse_mode": "HTML", "reply_markup": markup})
+        else:
+            await _send_message(chat_id, reply_text, reply_markup=markup)
         return
+
 
     if incoming:
         if await _send_china_ideas(chat_id, incoming):
