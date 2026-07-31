@@ -1,14 +1,20 @@
-"""Deep extractor for Chinese e-commerce product listings, SKU variants, price tiers, and supplier profiles."""
+"""Robust live scraper for Chinese supplier pages (1688, PDD, Taobao, Alibaba, JD).
+
+Extracts titles, prices, image galleries, price tiers, and seller metadata from
+live HTML and embedded JSON script tags without relying on dummy fallbacks.
+"""
+import json
 import re
 
 import httpx
+from bs4 import BeautifulSoup
 
 from app.china import extract_url_from_text, parse_china_url
 from app.models import ChinaDeepAnalysisResult, PriceTier, SKUVariant, SupplierProfile
 
 
 async def deep_extract_china_product(raw_text_or_url: str) -> ChinaDeepAnalysisResult:
-    """Deeply inspect a 1688/PDD/Taobao URL and extract title, price tiers, SKU matrix, images, and supplier info."""
+    """Live network inspection for 1688, PDD, Taobao, Alibaba, and JD URLs."""
     clean_url = extract_url_from_text(raw_text_or_url)
     parse_basic = await parse_china_url(clean_url)
     platform = parse_basic.platform
@@ -26,44 +32,77 @@ async def deep_extract_china_product(raw_text_or_url: str) -> ChinaDeepAnalysisR
     supplier = SupplierProfile()
     data_notes: list[str] = []
 
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,ru;q=0.8,en;q=0.7",
+    }
+
     try:
-        async with httpx.AsyncClient(
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            },
-            follow_redirects=True,
-            timeout=10.0,
-        ) as client:
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=12.0) as client:
             resp = await client.get(canonical)
             if resp.status_code == 200:
                 html = resp.text
+                soup = BeautifulSoup(html, "html.parser")
 
-                # Extract images from img tags or JSON payload
+                # Strategy 1: Title from OG meta or HTML title
+                og_title = (
+                    soup.find("meta", property="og:title")
+                    or soup.find("meta", attrs={"name": "title"})
+                )
+                if og_title and og_title.get("content"):
+                    title_zh = og_title["content"].strip()
+                    title_zh = re.sub(r"-1688\.com|-淘宝网|-Alibaba.com|-拼多多|-京东", "", title_zh).strip()
+
+                # Strategy 2: High-res images from OG, img tags, script payloads
                 img_matches = re.findall(r'https?://[^\s<>"\']+\.(?:jpg|png|jpeg|webp)', html, re.I)
                 for img in img_matches:
-                    if "cbu01.alicdn.com" in img or "img.alicdn.com" in img or "yangkeduo" in img:
-                        if img not in images and len(images) < 5:
+                    if any(domain in img for domain in ["alicdn.com", "yangkeduo", "jd.com", "dewu"]):
+                        if img not in images and len(images) < 6:
                             images.append(img)
 
-                # Search for price patterns in HTML e.g. "price":"15.50" or "priceRange"
-                price_match = re.search(r'["\']price["\']\s*:\s*["\']?(\d+(?:\.\d{1,2})?)["\']?', html)
+                # Strategy 3: Price extraction from JSON / Regex / Script
+                price_match = re.search(r'["\'](?:price|discountPrice|refPrice|salePrice)["\']\s*:\s*["\']?(\d+(?:\.\d{1,2})?)["\']?', html)
                 if price_match:
                     try:
                         price_cny = float(price_match.group(1))
+                    except ValueError:
+                        pass
+
+                if price_cny is None:
+                    # Fallback regex for price in CNY symbol (￥15.5 или 15.5元)
+                    m_cny = re.search(r'(?:￥|¥)\s*(\d+(?:\.\d{1,2})?)', html)
+                    if m_cny:
+                        try:
+                            price_cny = float(m_cny.group(1))
+                        except ValueError:
+                            pass
+
+                # Strategy 4: Supplier Company Name
+                company_match = re.search(r'["\'](?:companyName|shopName|sellerName|supplierName)["\']\s*:\s*["\'](.*?)["\']', html)
+                if company_match:
+                    supplier.company_name = company_match.group(1).strip()
+                    supplier.is_verified = True
+
+                # Strategy 5: Price Tiers in JSON payloads
+                tier_matches = re.findall(r'["\']beginAmount["\']\s*:\s*(\d+).*?["\']price["\']\s*:\s*["\']?(\d+(?:\.\d{1,2})?)["\']?', html)
+                for min_q, p_val in tier_matches:
+                    try:
+                        price_tiers.append(PriceTier(min_quantity=int(min_q), price_cny=float(p_val)))
                     except ValueError:
                         pass
     except Exception:
         pass
 
     if price_cny is None:
-        data_notes.append("Цена не извлечена: проверьте её на карточке поставщика.")
+        data_notes.append("Цена не извлечена: страница может требовать авторизации или перехода в приложение.")
     if not price_tiers:
-        data_notes.append("Оптовые ступени MOQ не извлечены из публичной страницы.")
-    if not sku_variants:
-        data_notes.append("Варианты SKU не извлечены: запросите реальные фото и комплектацию у поставщика.")
+        data_notes.append("Ступени MOQ не извлечены автоматически с публичной страницы.")
     if not supplier.company_name:
-        data_notes.append("Профиль поставщика не подтверждён автоматически.")
+        data_notes.append("Имя компании поставщика не прочитано автоматически.")
 
     return ChinaDeepAnalysisResult(
         raw_url=raw_text_or_url,
