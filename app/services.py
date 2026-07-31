@@ -3,7 +3,7 @@ import json
 from openai import AsyncOpenAI
 
 from app.config import get_settings
-from app.models import KaspiProduct, RiskAssessment
+from app.models import KaspiProduct, ProductInsight, RiskAssessment
 
 
 class XAIServiceError(RuntimeError):
@@ -28,6 +28,53 @@ def evaluate_hard_filters(product: KaspiProduct) -> tuple[bool, list[str]]:
     return not reasons, reasons
 
 
+def build_product_insight(product: KaspiProduct) -> ProductInsight:
+    """Produce a deterministic, explainable first-pass recommendation."""
+    score = 50
+    strengths: list[str] = []
+    concerns: list[str] = []
+    if product.review_count is not None:
+        if product.review_count >= 50:
+            score += 20
+            strengths.append("Есть заметный социальный сигнал: много отзывов.")
+        elif product.review_count < 15:
+            score -= 12
+            concerns.append("Мало отзывов: спрос ещё не подтверждён.")
+    else:
+        concerns.append("Не удалось прочитать число отзывов.")
+    if product.seller_count is not None:
+        if product.seller_count <= 3:
+            score += 15
+            strengths.append("Конкуренция по числу продавцов выглядит умеренной.")
+        elif product.seller_count >= 8:
+            score -= 20
+            concerns.append("Много продавцов: вероятно придётся конкурировать ценой.")
+    else:
+        concerns.append("Нужно вручную проверить число продавцов.")
+    if product.rating is not None and product.rating >= 4.5:
+        score += 10
+        strengths.append("Высокий рейтинг помогает подтвердить интерес покупателей.")
+    if product.price_kzt is not None and product.price_kzt >= 8000:
+        score += 5
+        strengths.append("Цена оставляет больше пространства для логистики и маржи.")
+    elif product.price_kzt is not None and product.price_kzt < 4000:
+        score -= 12
+        concerns.append("Низкая цена может не покрыть логистику и комиссию.")
+    score = max(0, min(100, score))
+    if score >= 75:
+        verdict, next_step = "Можно исследовать", "Найдите 3 поставщиков и рассчитайте тестовую партию."
+    elif score >= 55:
+        verdict, next_step = "Нужна проверка", "Проверьте поставщика, вес и себестоимость до решения."
+    else:
+        verdict, next_step = "Высокий риск", "Не закупайте, пока не появится сильное преимущество по цене или качеству."
+    return ProductInsight(
+        score=score, verdict=verdict,
+        summary="Оценка построена по открытым сигналам карточки; это не оценка фактических продаж.",
+        strengths=strengths or ["Нужно собрать больше рыночных данных."], concerns=concerns,
+        next_step=next_step,
+    )
+
+
 async def assess_risk(product: KaspiProduct) -> RiskAssessment:
     s = get_settings()
     if not s.xai_configured:
@@ -49,3 +96,28 @@ async def assess_risk(product: KaspiProduct) -> RiskAssessment:
         return RiskAssessment.model_validate(json.loads(response.choices[0].message.content or "{}"))
     except Exception as exc:  # SDK, transport, invalid JSON, and schema failures.
         raise XAIServiceError("xAI не вернул корректную оценку рисков") from exc
+
+
+async def answer_sourcing_question(question: str) -> str | None:
+    """Give the Telegram bot a useful conversational layer without inventing market facts."""
+    s = get_settings()
+    if not s.xai_configured:
+        return None
+    prompt = (
+        "Ты дружелюбный AI-помощник по закупкам товаров из Китая для продажи на Kaspi в Казахстане. "
+        "Отвечай по-русски, коротко и конкретно. Не выдавай предположения за рыночные данные, "
+        "не обещай юридическое соответствие и не советуй обходить правила площадок. "
+        "Если для расчёта не хватает цифр, перечисли ровно какие. В конце предложи один следующий шаг.\n\n"
+        f"Сообщение пользователя: {question}"
+    )
+    try:
+        async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
+            response = await client.chat.completions.create(
+                model=s.xai_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.35,
+            )
+        answer = response.choices[0].message.content
+        return answer.strip() if answer else None
+    except Exception:
+        return None

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 class KaspiProduct(BaseModel):
@@ -31,3 +31,76 @@ class ScanResult(BaseModel):
     passes_hard_filters: bool
     filter_reasons: list[str]
     ai_assessment: RiskAssessment | None = None
+
+
+class ProductInsight(BaseModel):
+    score: int = Field(ge=0, le=100)
+    verdict: str
+    summary: str
+    strengths: list[str]
+    concerns: list[str]
+    next_step: str
+
+
+class SupplierLink(BaseModel):
+    platform: str
+    url: HttpUrl
+    unit_price_cny: float | None = Field(default=None, ge=0)
+    minimum_order_quantity: int | None = Field(default=None, ge=1)
+    weight_kg: float | None = Field(default=None, ge=0)
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class EconomicsRequest(BaseModel):
+    sale_price_kzt: float = Field(gt=0)
+    unit_price_cny: float = Field(gt=0)
+    quantity: int = Field(gt=0)
+    exchange_rate_cny_kzt: float = Field(default=72, gt=0)
+    cargo_cost_kzt: float = Field(default=0, ge=0)
+    kaspi_fee_percent: float = Field(default=12, ge=0, le=100)
+    packaging_per_unit_kzt: float = Field(default=150, ge=0)
+    advertising_per_unit_kzt: float = Field(default=0, ge=0)
+    return_reserve_percent: float = Field(default=5, ge=0, le=100)
+    customs_per_unit_kzt: float = Field(default=0, ge=0)
+
+
+class EconomicsResult(BaseModel):
+    unit_cost_kzt: float
+    marketplace_fee_kzt: float
+    return_reserve_kzt: float
+    profit_per_unit_kzt: float
+    margin_percent: float
+    roi_percent: float
+    total_profit_kzt: float
+    maximum_purchase_price_cny: float
+    recommendation: str
+
+
+class CargoQuoteRequest(BaseModel):
+    actual_weight_kg: float = Field(gt=0)
+    length_cm: float = Field(gt=0)
+    width_cm: float = Field(gt=0)
+    height_cm: float = Field(gt=0)
+    quantity: int = Field(default=1, gt=0)
+    urgency: str = Field(default="normal")
+    cargo_type: str = Field(default="standard")
+
+    @field_validator("urgency")
+    @classmethod
+    def validate_urgency(cls, value: str) -> str:
+        if value not in {"low", "normal", "high"}:
+            raise ValueError("urgency must be low, normal, or high")
+        return value
+
+
+class CargoQuote(BaseModel):
+    carrier: str
+    route: str
+    method: str
+    chargeable_weight_kg: float
+    total_cost_kzt: float
+    cost_per_unit_kzt: float
+    delivery_days: str
+    insurance_included: bool
+    fit_score: int
+    recommendation: str
