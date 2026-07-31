@@ -71,7 +71,7 @@ async def handle_update(update: dict[str, Any]) -> None:
     chat_id = message["chat"]["id"]
     callback = update.get("callback_query", {}).get("data")
     incoming = (update.get("message", {}).get("text") or "").strip()
-    command = incoming.split(maxsplit=1)[0].lower()
+    command = incoming.split(maxsplit=1)[0].lower() if incoming else ""
     if callback:
         await _call("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
         prompts = {
