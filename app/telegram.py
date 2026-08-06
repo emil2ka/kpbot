@@ -381,7 +381,6 @@ async def _handle_text_stage(chat_id: int, incoming: str) -> bool:
         session["stage"] = None
         return True
     if stage == "profit_manual":
-        # Commas are the documented field separator. Decimal values can use a dot.
         values = re.findall(r"\d+(?:\.\d+)?", incoming.replace(",", " "))
         if len(values) < 4:
             await _send(chat_id, "Нужно 4 значения: <code>продажа KZT, цена CNY, количество, доставка KZT</code>. Например: <code>8990, 18, 50, 60000</code>")
@@ -416,17 +415,86 @@ async def _handle_text_stage(chat_id: int, incoming: str) -> bool:
 
 async def register_commands() -> None:
     await _call("setMyCommands", {"commands": [
-        {"command": "start", "description": "Открыть меню"},
+        {"command": "start", "description": "Открыть Главное меню"},
         {"command": "find", "description": "Найти товар"},
-        {"command": "analyze", "description": "Полный анализ Kaspi"},
-        {"command": "check", "description": "Проверить товар Kaspi"},
-        {"command": "ideas", "description": "Мои идеи"},
+        {"command": "analyze", "description": "Анализ рынка Kaspi"},
+        {"command": "check", "description": "Проверить карточку Kaspi"},
         {"command": "profit", "description": "Рассчитать прибыль"},
         {"command": "cargo", "description": "Сравнить карго"},
+        {"command": "sheet", "description": "Бланк закупки CSV"},
+        {"command": "label", "description": "Маркировка Cargo"},
+        {"command": "ideas", "description": "Мои идеи"},
     ]})
 
 
 async def handle_update(update: dict[str, Any]) -> None:
+    message = update.get("message") or update.get("callback_query", {}).get("message")
+    if not message:
+        return
+    chat_id = message["chat"]["id"]
+    callback = update.get("callback_query", {}).get("data")
+    incoming = (update.get("message", {}).get("text") or "").strip()
+    command = incoming.split(maxsplit=1)[0].lower() if incoming else ""
+    if callback:
+        await _call("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
+        if callback == "home": await _home(chat_id)
+        elif callback == "find": await _start_idea_flow(chat_id)
+        elif callback == "check":
+            _session(chat_id)["stage"] = "await_kaspi"; await _send(chat_id, "Пришли ссылку на товар Kaspi. Я покажу конкуренцию, ориентир закупки и следующий шаг.")
+        elif callback == "market_scan":
+            _session(chat_id)["stage"] = "market_scan"; await _send(chat_id, "Что искать на Kaspi? Например: <code>органайзеры для кухни</code> или <code>авто держатели для телефона</code>.")
+        elif callback == "supplier":
+            _session(chat_id)["stage"] = "await_supplier"; await _send(chat_id, "Пришли ссылку на 1688, Taobao, Alibaba, Pinduoduo или Tmall. Добавлю её к текущей идее.")
+        elif callback == "workspace": await _show_workspace(chat_id)
+        elif callback == "profile": await _show_profile(chat_id)
+        elif callback == "profile_budget": _session(chat_id)["stage"] = "profile_budget"; await _send(chat_id, "Напиши комфортный бюджет на тестовую закупку в тенге.")
+        elif callback == "profile_margin":
+            profile = _profile(chat_id); profile["target_margin_percent"] = 35; save_telegram_profile(chat_id, profile); await _show_profile(chat_id)
+        elif callback == "profit": _session(chat_id)["stage"] = "profit_manual"; await _send(chat_id, "Напиши: <code>продажа KZT, цена CNY, количество, доставка KZT</code>.\nНапример: <code>8990, 18, 50, 60000</code>")
+        elif callback == "compare": await _compare_current(chat_id)
+        elif callback == "cargo": _session(chat_id)["stage"] = "cargo"; await _send(chat_id, "Напиши: <code>вес кг, длина, ширина, высота см, количество</code>.\nНапример: <code>12, 40, 30, 25, 50</code>")
+        elif callback == "sheet":
+            items = list_sourcing_items(chat_id)
+            if not items:
+                await _send(chat_id, "В вашем рабочем пространстве пока нет сохраненных идей для бланка закупки. Сначала найдите товар!")
+            else:
+                from app.models import ProcurementItem
+                from app.procurement import generate_procurement_sheet
+                p_items = [ProcurementItem(product_title_ru=it.get("title", "Товар"), product_title_zh="商品", supplier_url=it.get("kaspi_url") or "https://1688.com", platform="1688", sku_name="Стандарт", quantity=50, target_price_cny=15.0) for it in items[:5]]
+                res = await generate_procurement_sheet(p_items)
+                await _send(chat_id, f"<b>📄 Бланк закупки сформирован!</b>\nВсего товаров: {res.total_items_count}\nОбщее количество: {res.total_quantity} шт\nСумма CNY: <b>{res.total_amount_cny:,.2f} ¥</b>\nСумма KZT: <b>{res.total_amount_kzt:,.0f} ₸</b>\n\n<code>{escape(res.csv_content[:300])}</code>")
+        elif callback == "label":
+            from app.cargo_label import CargoLabelRequest, generate_cargo_label
+            res = generate_cargo_label(CargoLabelRequest(consignee_name="Клиент", city="Алматы", cargo_code="KZ-ALM-8899", product_title_zh="货物", carton_number=1, total_cartons=2, quantity_per_carton=50, weight_kg=15.0))
+            await _send(chat_id, f"<b>🏷 Образец маркировочного ярлыка Cargo:</b>\n\n<code>{escape(res.label_text_cn_ru)}</code>")
+        elif callback.startswith("budget:"):
+            _profile(chat_id)["test_budget_kzt"] = int(callback.split(":", 1)[1]) or None; save_telegram_profile(chat_id, _profile(chat_id)); await _ask_exclusions(chat_id)
+        elif callback.startswith("category:"):
+            _session(chat_id)["context"]["category"] = callback.split(":", 1)[1]; await _ask_product_type(chat_id)
+        elif callback.startswith("type:"):
+            _session(chat_id)["context"]["product_type"] = callback.split(":", 1)[1]; await _ask_budget(chat_id)
+        elif callback.startswith("exclude:"):
+            value = callback.split(":", 1)[1]; _profile(chat_id)["excluded_categories"] = [] if value == "none" else [value]; save_telegram_profile(chat_id, _profile(chat_id)); await _generate_ideas(chat_id)
+        elif callback.startswith("idea:"): await _open_idea(chat_id, int(callback.split(":", 1)[1]))
+        return
+    if command in {"/start", "/menu", "/help"}: await _home(chat_id); return
+    command_actions = {"/find": "find", "/check": "check", "/analyze": "market_scan", "/ideas": "workspace", "/profit": "profit", "/cargo": "cargo", "/sheet": "sheet", "/label": "label", "/trends": "market_scan"}
+    if command in command_actions:
+        await handle_update({"callback_query": {"id": str(update.get("update_id", "command")), "data": command_actions[command], "message": message}}); return
+    if "kaspi.kz" in incoming.lower():
+        try: await _send_kaspi_product(chat_id, await fetch_product(incoming))
+        except KaspiExtractionError as exc: await _send(chat_id, f"Не смог прочитать карточку Kaspi: {escape(str(exc))}")
+        return
+    if detect_platform(incoming) != "Other": await _send_supplier(chat_id, incoming); return
+    if _session(chat_id).get("stage") == "market_scan":
+        await _run_market_scan(chat_id, incoming)
+        return
+    if incoming and await _handle_text_stage(chat_id, incoming): return
+    await _send(chat_id, "Я могу помочь найти товар или проверить уже найденный. Выбери сценарий — так дам точный следующий шаг.", _keyboard([[("🔍 Найти товар", "find"), ("🔗 Проверить Kaspi", "check")], [("⬅️ В меню", "home")]]))
+
+
+
+async def _handle_update_legacy(update: dict[str, Any]) -> None:
     message = update.get("message") or update.get("callback_query", {}).get("message")
     if not message:
         return

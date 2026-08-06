@@ -138,6 +138,7 @@ from app.china_live import (
     build_live_1688_search_url,
     build_live_alibaba_search_url,
     build_live_pdd_search_url,
+    build_live_taobao_image_search_url,
     build_live_taobao_search_url,
     fetch_1688_live_suggestions,
     fetch_1688_live_search,
@@ -170,6 +171,7 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
         url_tb = build_live_taobao_search_url(active_kw, max_price_cny=target_cny if target_cny > 0 else None)
         url_ali = build_live_alibaba_search_url(active_kw)
         img_url = build_live_1688_image_search_url(image_url) if image_url else None
+        img_tb_url = build_live_taobao_image_search_url(image_url) if image_url else None
 
         search_urls = {
             "1688": url_1688_factory,
@@ -178,6 +180,8 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
             "taobao": url_tb,
             "alibaba": url_ali,
         }
+        if img_tb_url:
+            search_urls["taobao_image"] = img_tb_url
 
         # Repeat only if 1688 suggested a different query; otherwise reuse the
         # result above and avoid a duplicate request.
@@ -190,10 +194,12 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
             live_items.append(
                 ChinaSupplierItem(
                     title=r_item["title"],
-                    price_cny=r_item["price_cny"],
+                    price_cny=r_item.get("price_cny"),
                     moq=r_item.get("moq", 1),
+                    image_url=r_item.get("image_url"),
+                    supplier_name=r_item.get("supplier_name"),
                     detail_url=r_item["detail_url"],
-                    platform="1688",
+                    platform=r_item.get("platform", "1688"),
                 )
             )
 

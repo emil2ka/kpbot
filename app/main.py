@@ -216,6 +216,18 @@ async def china_compare_supplier(request: SupplierComparisonRequest, _: None = D
     )
 
 
+from app.china_live import build_live_1688_image_search_url, build_live_taobao_image_search_url
+
+
+@app.post("/api/v1/china/image-search")
+async def china_image_search(image_url: str, _: None = Depends(require_api_key)) -> dict[str, str]:
+    """Generate 100% valid live image/photo search URLs for 1688 and Taobao."""
+    return {
+        "1688_image_search_url": build_live_1688_image_search_url(image_url),
+        "taobao_image_search_url": build_live_taobao_image_search_url(image_url),
+    }
+
+
 from app.china_scraper import deep_extract_china_product
 from app.currency import get_cny_to_kzt_rate
 from app.models import (

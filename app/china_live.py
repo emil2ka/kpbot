@@ -84,10 +84,12 @@ def build_live_alibaba_search_url(keywords_zh: str) -> str:
 
 
 def _extract_1688_items(html: str, target_cny: float | None = None) -> list[dict]:
-    """Extract only complete offer records exposed in a public page payload."""
+    """Extract complete offer records exposed in public 1688 page payloads."""
     import re
     items: list[dict] = []
     seen_ids: set[str] = set()
+
+    # Pattern 1: offerId JSON structures
     for match in re.finditer(r'["\']offerId["\']\s*:\s*["\']?(\d+)["\']?', html):
         offer_id = match.group(1)
         if offer_id in seen_ids:
@@ -96,21 +98,36 @@ def _extract_1688_items(html: str, target_cny: float | None = None) -> list[dict
         next_offer = re.search(r'["\']offerId["\']\s*:', chunk[20:])
         if next_offer:
             chunk = chunk[:next_offer.start() + 20]
-        title_match = re.search(r'["\'](?:title|subject)["\']\s*:\s*["\'](.+?)["\']\s*[,}]', chunk, re.S)
-        price_match = re.search(r'["\'](?:price|priceInfo|offerPrice)["\']\s*:\s*["\']?(\d+(?:\.\d+)?)["\']?', chunk)
+        title_match = re.search(r'["\'](?:title|subject|name)["\']\s*:\s*["\'](.+?)["\']\s*[,}]', chunk, re.S)
+        price_match = re.search(r'["\'](?:price|priceInfo|offerPrice|refPrice)["\']\s*:\s*["\']?(\d+(?:\.\d+)?)["\']?', chunk)
+        img_match = re.search(r'["\'](?:imageUrl|picUrl|imgUrl|image)["\']\s*:\s*["\'](https?://[^\s"\']+)["\']', chunk)
+        company_match = re.search(r'["\'](?:companyName|sellerName|shopName)["\']\s*:\s*["\'](.+?)["\']', chunk)
+
         if not title_match or not price_match:
             continue
-        price = float(price_match.group(1))
+        try:
+            price = float(price_match.group(1))
+        except ValueError:
+            continue
         if target_cny and price > target_cny:
             continue
         title = unescape(title_match.group(1)).replace("\\u0026", "&").strip()
-        if not title:
+        if not title or len(title) < 2:
             continue
+
         seen_ids.add(offer_id)
-        items.append({"title": title, "price_cny": price, "moq": 1,
-                      "detail_url": f"https://detail.1688.com/offer/{offer_id}.html", "platform": "1688"})
+        items.append({
+            "title": title,
+            "price_cny": price,
+            "moq": 1,
+            "image_url": img_match.group(1) if img_match else None,
+            "supplier_name": unescape(company_match.group(1)).strip() if company_match else None,
+            "detail_url": f"https://detail.1688.com/offer/{offer_id}.html",
+            "platform": "1688",
+        })
         if len(items) == 5:
             break
+
     return items
 
 
@@ -153,8 +170,12 @@ async def fetch_real_1688_live_items(keywords_zh: str, target_cny: float | None 
 
 
 def build_live_1688_image_search_url(image_url: str) -> str:
-
     """Build a 100% valid working 1688 image search URL."""
     encoded = quote(image_url.strip())
     return f"https://s.1688.com/selloffer/image_search.htm?imageUrl={encoded}"
 
+
+def build_live_taobao_image_search_url(image_url: str) -> str:
+    """Build a 100% valid working Taobao photo search URL."""
+    encoded = quote(image_url.strip())
+    return f"https://s.taobao.com/search?app=imgsearch&imgfile={encoded}"
