@@ -141,6 +141,8 @@ class TrendReport(BaseModel):
     review_change: int | None = None
     seller_change: int | None = None
     youtube: dict
+    tiktok: dict | None = None
+    telegram: dict | None = None
     evidence: list[str]
     caveats: list[str]
 

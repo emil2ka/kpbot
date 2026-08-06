@@ -198,12 +198,29 @@ async def _open_idea(chat_id: int, index: int) -> None:
     await _send(chat_id, "<b>Запускаю полный первичный анализ.</b> Сначала проверяю открытую выборку Kaspi, затем готовлю ориентир поиска и закупки в Китае.")
     await _send(chat_id, "<b>1/3 · Kaspi</b> Ищу открытые карточки, сравниваю цены, отзывы и число продавцов…")
     await _run_market_scan(chat_id, idea["title_ru"])
-    await _send(chat_id, "<b>2/3 · Тренд</b> Проверяю свежие публичные видео по товару в Казахстане…")
-    trend = await fetch_youtube_trend_signal(idea["title_ru"])
-    if trend.status == "live":
-        await _send(chat_id, f"Тренд-сигнал: за 30 дней найдено <b>{trend.video_count_30d}</b> видео, за 7 дней — <b>{trend.video_count_7d}</b>. Это сигнал интереса, не данные о продажах.")
+    await _send(chat_id, "<b>2/3 · Тренды и соцсети</b> Проверяю сигналы в YouTube, TikTok и Telegram-каналах…")
+    import asyncio
+    from app.tiktok import fetch_tiktok_trend_signal
+    from app.telegram_search import fetch_telegram_trend_signal
+
+    yt_signal, tt_signal, tg_signal = await asyncio.gather(
+        fetch_youtube_trend_signal(idea["title_ru"]),
+        fetch_tiktok_trend_signal(idea["title_ru"]),
+        fetch_telegram_trend_signal(idea["title_ru"]),
+    )
+
+    trend_summary = []
+    if yt_signal.status == "live":
+        trend_summary.append(f"• <b>YouTube KZ</b>: {yt_signal.video_count_7d} видео за 7д ({yt_signal.total_views} просмотров)")
+    if tt_signal.status == "live":
+        trend_summary.append(f"• <b>TikTok</b>: {tt_signal.video_count} видео ({tt_signal.total_views} просмотров, {tt_signal.total_likes} лайков)")
+    if tg_signal.status == "live":
+        trend_summary.append(f"• <b>Telegram</b>: {tg_signal.post_count} постов в {len(tg_signal.channels_found)} торговых каналах")
+
+    if trend_summary:
+        await _send(chat_id, "<b>Мультиплатформенный тренд-анализ:</b>\n" + "\n".join(trend_summary))
     else:
-        await _send(chat_id, "Тренд-сигнал сейчас недоступен — не буду выдумывать цифры. Продолжаю с Kaspi и Китаем.")
+        await _send(chat_id, "Прямых тренд-сигналов в соцсетях не найдено. Продолжаю с Kaspi и Китаем.")
     await _send(chat_id, "<b>3/3 · Китай</b> Ищу поставщиков и проверяю, есть ли реальные открытые предложения…")
     china = await get_china_data_provider().search_suppliers(idea["title_ru"], idea["chinese_keywords"])
     if china.live_items:

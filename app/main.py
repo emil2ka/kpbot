@@ -96,15 +96,29 @@ async def kaspi_insight(request: ScanRequest, _: None = Depends(require_api_key)
     return build_product_insight(product)
 
 
+import asyncio
+from app.tiktok import TikTokTrendSignal, fetch_tiktok_trend_signal
+from app.telegram_search import TelegramTrendSignal, fetch_telegram_trend_signal
+
+
 @app.post("/api/v1/trends/watch", response_model=TrendReport)
 async def trend_watch(request: TrendWatchRequest, _: None = Depends(require_api_key)) -> TrendReport:
-    """Record a daily product observation and return evidence, never a fabricated trend."""
+    """Record a daily product observation and return multi-platform trend evidence."""
     try:
         product = await fetch_product(str(request.kaspi_url))
-        youtube = get_cached_youtube_signal(product.title) or await fetch_youtube_trend_signal(product.title)
+        youtube_task = get_cached_youtube_signal(product.title) or fetch_youtube_trend_signal(product.title)
+        tiktok_task = fetch_tiktok_trend_signal(product.title)
+        telegram_task = fetch_telegram_trend_signal(product.title)
+
+        if asyncio.iscoroutine(youtube_task):
+            youtube, tiktok, telegram = await asyncio.gather(youtube_task, tiktok_task, telegram_task)
+        else:
+            youtube = youtube_task
+            tiktok, telegram = await asyncio.gather(tiktok_task, telegram_task)
+
         save_trend_observation(product, youtube)
         watch, snapshots = get_trend_history(str(product.source_url))
-        return build_trend_report(watch, snapshots, youtube)
+        return build_trend_report(watch, snapshots, youtube, tiktok=tiktok, telegram=telegram)
     except KaspiExtractionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except DatabaseError as exc:
@@ -115,10 +129,30 @@ async def trend_watch(request: TrendWatchRequest, _: None = Depends(require_api_
 async def trend_report(kaspi_url: str, _: None = Depends(require_api_key)) -> TrendReport:
     try:
         watch, snapshots = get_trend_history(kaspi_url)
-        youtube = get_cached_youtube_signal(watch["title"]) or await fetch_youtube_trend_signal(watch["title"])
-        return build_trend_report(watch, snapshots, youtube)
+        title = watch["title"]
+        youtube_task = get_cached_youtube_signal(title) or fetch_youtube_trend_signal(title)
+        tiktok_task = fetch_tiktok_trend_signal(title)
+        telegram_task = fetch_telegram_trend_signal(title)
+
+        if asyncio.iscoroutine(youtube_task):
+            youtube, tiktok, telegram = await asyncio.gather(youtube_task, tiktok_task, telegram_task)
+        else:
+            youtube = youtube_task
+            tiktok, telegram = await asyncio.gather(tiktok_task, telegram_task)
+
+        return build_trend_report(watch, snapshots, youtube, tiktok=tiktok, telegram=telegram)
     except DatabaseError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/trends/tiktok", response_model=TikTokTrendSignal)
+async def trends_tiktok(query: str, _: None = Depends(require_api_key)) -> TikTokTrendSignal:
+    return await fetch_tiktok_trend_signal(query)
+
+
+@app.post("/api/v1/trends/telegram", response_model=TelegramTrendSignal)
+async def trends_telegram(query: str, _: None = Depends(require_api_key)) -> TelegramTrendSignal:
+    return await fetch_telegram_trend_signal(query)
 
 
 @app.post("/api/v1/economics/calculate", response_model=EconomicsResult)
