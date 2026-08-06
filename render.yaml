@@ -22,3 +22,5 @@ services:
         sync: false
       - key: TELEGRAM_WEBHOOK_SECRET
         generateValue: true
+      - key: YOUTUBE_API_KEY
+        sync: false

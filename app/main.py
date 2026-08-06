@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from app.china import build_search_urls, parse_china_url
 from app.china_api import ChinaSearchResult, get_china_data_provider
 from app.config import get_settings
-from app.database import DatabaseError, save_scan
+from app.database import DatabaseError, get_cached_youtube_signal, get_trend_history, save_scan, save_trend_observation
 from app.kaspi import KaspiExtractionError, fetch_product
 from app.economics import calculate_economics, compare_cargo
 from app.models import (
@@ -22,6 +22,8 @@ from app.models import (
     ScanResult,
     SupplierComparisonRequest,
     SupplierComparisonResult,
+    TrendReport,
+    TrendWatchRequest,
 )
 from app.services import (
     XAIServiceError,
@@ -31,6 +33,8 @@ from app.services import (
     generate_chinese_keywords,
 )
 from app.telegram import handle_update, register_commands
+from app.trends import build_trend_report
+from app.youtube_trends import fetch_youtube_trend_signal
 
 
 @asynccontextmanager
@@ -52,6 +56,7 @@ async def health() -> dict[str, object]:
             "xai_configured": settings.xai_configured,
             "telegram_configured": settings.telegram_configured,
             "china_live_data_configured": settings.china_live_data_configured,
+            "youtube_configured": settings.youtube_configured,
         },
 
     }
@@ -89,6 +94,31 @@ async def kaspi_insight(request: ScanRequest, _: None = Depends(require_api_key)
     except KaspiExtractionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return build_product_insight(product)
+
+
+@app.post("/api/v1/trends/watch", response_model=TrendReport)
+async def trend_watch(request: TrendWatchRequest, _: None = Depends(require_api_key)) -> TrendReport:
+    """Record a daily product observation and return evidence, never a fabricated trend."""
+    try:
+        product = await fetch_product(str(request.kaspi_url))
+        youtube = get_cached_youtube_signal(product.title) or await fetch_youtube_trend_signal(product.title)
+        save_trend_observation(product, youtube)
+        watch, snapshots = get_trend_history(str(product.source_url))
+        return build_trend_report(watch, snapshots, youtube)
+    except KaspiExtractionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except DatabaseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/trends/report", response_model=TrendReport)
+async def trend_report(kaspi_url: str, _: None = Depends(require_api_key)) -> TrendReport:
+    try:
+        watch, snapshots = get_trend_history(kaspi_url)
+        youtube = get_cached_youtube_signal(watch["title"]) or await fetch_youtube_trend_signal(watch["title"])
+        return build_trend_report(watch, snapshots, youtube)
+    except DatabaseError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/v1/economics/calculate", response_model=EconomicsResult)

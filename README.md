@@ -86,6 +86,10 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
 
 Поиск сначала пытается получить публичную выдачу 1688. Если страница не отдаёт структурированные карточки, сервис использует публичную выдачу Made-in-China как запасной источник и явно помечает цену в USD. Защиту сайтов, CAPTCHA и авторизацию сервис не обходит. Для стабильных цен и MOQ с 1688 подключи лицензированный провайдер через `CHINA_PROVIDER_API_KEY` и `CHINA_PROVIDER_BASE_URL`.
 
+### Наблюдение трендов
+
+Перед первым вызовом `/api/v1/trends/watch` выполни `supabase/migrations/004_trend_observatory.sql` в Supabase SQL Editor и добавь `YOUTUBE_API_KEY` в Secrets. `POST /api/v1/trends/watch` принимает `{"kaspi_url":"https://kaspi.kz/shop/p/.../"}`, сохраняет снимок карточки и YouTube-сигнал. `GET /api/v1/trends/report?kaspi_url=...` отдаёт накопленные факты, дату наблюдения, уровень уверенности и ограничения данных. YouTube опрашивается не чаще раза в 24 часа для одного товара.
+
 `/health` показывает только статус подключения сервисов без раскрытия секретов. Render Blueprints берёт конфигурацию из `render.yaml`, а web service должен слушать `$PORT`; проект уже настроен под это. См. [документацию Render](https://render.com/docs/blueprint-spec).
 
 ## Следующая итерация

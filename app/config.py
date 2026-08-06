@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     app_api_key: str | None = None
     telegram_bot_token: str | None = None
     telegram_webhook_secret: str | None = None
+    youtube_api_key: str | None = None
     # Optional credentials for a licensed China catalogue-data provider.
     china_provider_api_key: str | None = None
     china_provider_base_url: str | None = None
@@ -35,6 +36,10 @@ class Settings(BaseSettings):
     @property
     def china_provider_configured(self) -> bool:
         return bool(self.china_provider_api_key and self.china_provider_base_url)
+
+    @property
+    def youtube_configured(self) -> bool:
+        return bool(self.youtube_api_key)
 
     @property
     def china_live_data_configured(self) -> bool:

@@ -126,6 +126,25 @@ class ChinaSearchRequest(BaseModel):
     title_ru: str
 
 
+class TrendWatchRequest(BaseModel):
+    kaspi_url: HttpUrl
+
+
+class TrendReport(BaseModel):
+    kaspi_url: str
+    title: str
+    observed_at: datetime
+    confidence_score: int = Field(ge=0, le=100)
+    confidence_label: str
+    kaspi_observations: int
+    price_change_percent: float | None = None
+    review_change: int | None = None
+    seller_change: int | None = None
+    youtube: dict
+    evidence: list[str]
+    caveats: list[str]
+
+
 class ChinaSearchResponse(BaseModel):
     keywords_chinese: str
     search_urls: dict[str, str]
