@@ -58,11 +58,11 @@ async def _send(chat_id: int, text: str, markup: dict[str, Any] | None = None) -
 
 async def _home(chat_id: int) -> None:
     _session(chat_id)["stage"] = None
-    await _send(chat_id, "<b>Kaspi Sourcing AI</b>\n\nПомогу найти товар, проверить спрос на Kaspi, подобрать поставщика и посчитать тестовую закупку.\n\nС чего начнём?", _keyboard([
-        [("🔍 Найти товар", "find"), ("🧠 Анализ рынка Kaspi", "market_scan")],
-        [("🔗 Проверить Kaspi", "check")],
-        [("🇨🇳 Проверить поставщика", "supplier"), ("💰 Рассчитать прибыль", "profit")],
-        [("📁 Мои идеи", "workspace"), ("👤 Профиль", "profile")],
+    intro = "Сначала настрой профиль — так идеи и расчёты будут точнее." if not _profile(chat_id).get("onboarded") else "Выбери рабочий сценарий."
+    await _send(chat_id, f"<b>Kaspi Sourcing AI</b>\n\n{intro}", _keyboard([
+        [("👤 Настроить профиль", "profile_setup"), ("💡 Придумать идею", "find")],
+        [("🔬 Разобрать свою идею", "own_idea"), ("📁 Мои идеи", "workspace")],
+        [("⚖️ Сравнить идеи", "compare_ideas"), ("✅ План действий", "action_plan")],
     ]))
 
 
@@ -438,6 +438,8 @@ async def handle_update(update: dict[str, Any]) -> None:
     if callback:
         await _call("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
         if callback == "home": await _home(chat_id)
+        elif callback == "profile_setup":
+            _session(chat_id)["stage"] = "profile_goal"; await _send(chat_id, "Для чего ищем товар?", _keyboard([[('🚀 Быстрый тест', 'goal:test'), ('📦 Стабильные продажи', 'goal:stable')], [('💰 Высокая маржа', 'goal:margin')]]))
         elif callback == "find": await _start_idea_flow(chat_id)
         elif callback == "check":
             _session(chat_id)["stage"] = "await_kaspi"; await _send(chat_id, "Пришли ссылку на товар Kaspi. Я покажу конкуренцию, ориентир закупки и следующий шаг.")
@@ -446,6 +448,14 @@ async def handle_update(update: dict[str, Any]) -> None:
         elif callback == "supplier":
             _session(chat_id)["stage"] = "await_supplier"; await _send(chat_id, "Пришли ссылку на 1688, Taobao, Alibaba, Pinduoduo или Tmall. Добавлю её к текущей идее.")
         elif callback == "workspace": await _show_workspace(chat_id)
+        elif callback == "own_idea":
+            _session(chat_id)["stage"] = "own_idea"; await _send(chat_id, "Напиши идею своими словами или пришли ссылку Kaspi/1688. Я уточню детали и соберу карточку решения.")
+        elif callback == "compare_ideas":
+            items = list_sourcing_items(chat_id) or _local_items.get(chat_id, [])
+            await _send(chat_id, "<b>⚖️ Сравнение идей</b>\n" + ("\n".join(f"• {escape(str(i['title']))}: {i.get('potential_score') or 'нет оценки'}/100" for i in items[:3]) if items else "Сначала сохрани хотя бы две идеи."))
+        elif callback == "action_plan":
+            idea = _session(chat_id)["context"].get("idea")
+            await _send(chat_id, "<b>✅ План действий</b>\n1. Проверь 3 карточки Kaspi и цены.\n2. Сравни 3 поставщиков и MOQ.\n3. Закажи образец.\n4. Посчитай юнит-экономику.\n5. Реши: тест/отказ." if idea else "Выбери идею в «Мои идеи» или создай новую — тогда соберу персональный план.")
         elif callback == "profile": await _show_profile(chat_id)
         elif callback == "profile_budget": _session(chat_id)["stage"] = "profile_budget"; await _send(chat_id, "Напиши комфортный бюджет на тестовую закупку в тенге.")
         elif callback == "profile_margin":
@@ -469,6 +479,8 @@ async def handle_update(update: dict[str, Any]) -> None:
             await _send(chat_id, f"<b>🏷 Образец маркировочного ярлыка Cargo:</b>\n\n<code>{escape(res.label_text_cn_ru)}</code>")
         elif callback.startswith("budget:"):
             _profile(chat_id)["test_budget_kzt"] = int(callback.split(":", 1)[1]) or None; save_telegram_profile(chat_id, _profile(chat_id)); await _ask_exclusions(chat_id)
+        elif callback.startswith("goal:"):
+            profile = _profile(chat_id); profile["goal"] = callback.split(":", 1)[1]; profile["onboarded"] = True; save_telegram_profile(chat_id, profile); await _show_profile(chat_id)
         elif callback.startswith("category:"):
             _session(chat_id)["context"]["category"] = callback.split(":", 1)[1]; await _ask_product_type(chat_id)
         elif callback.startswith("type:"):
@@ -488,6 +500,10 @@ async def handle_update(update: dict[str, Any]) -> None:
     if detect_platform(incoming) != "Other": await _send_supplier(chat_id, incoming); return
     if _session(chat_id).get("stage") == "market_scan":
         await _run_market_scan(chat_id, incoming)
+        return
+    if _session(chat_id).get("stage") == "own_idea":
+        _session(chat_id)["context"] = {"own_idea": incoming}; _session(chat_id)["stage"] = None
+        await _send(chat_id, f"<b>🔬 Карточка идеи: {escape(incoming)}</b>\n\nПришли ссылку Kaspi для проверки конкуренции или ссылку 1688 для цены поставщика. Я сохраню контекст и продолжу анализ.", _keyboard([[('🧠 Анализ рынка Kaspi', 'market_scan'), ('💰 Рассчитать прибыль', 'profit')]]))
         return
     if incoming and await _handle_text_stage(chat_id, incoming): return
     await _send(chat_id, "Я могу помочь найти товар или проверить уже найденный. Выбери сценарий — так дам точный следующий шаг.", _keyboard([[("🔍 Найти товар", "find"), ("🔗 Проверить Kaspi", "check")], [("⬅️ В меню", "home")]]))
