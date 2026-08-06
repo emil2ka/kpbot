@@ -17,7 +17,7 @@ from app.database import (
 from app.economics import calculate_economics, calculate_target_cny_price, compare_cargo
 from app.models import CargoQuoteRequest, EconomicsRequest
 from app.services import build_product_insight, generate_china_ideas, generate_chinese_keywords
-from app.kaspi import KaspiExtractionError, fetch_product
+from app.kaspi import KaspiExtractionError, fetch_product, search_products
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -57,10 +57,43 @@ async def _send(chat_id: int, text: str, markup: dict[str, Any] | None = None) -
 async def _home(chat_id: int) -> None:
     _session(chat_id)["stage"] = None
     await _send(chat_id, "<b>Kaspi Sourcing AI</b>\n\nПомогу найти товар, проверить спрос на Kaspi, подобрать поставщика и посчитать тестовую закупку.\n\nС чего начнём?", _keyboard([
-        [("🔍 Найти товар", "find"), ("🔗 Проверить Kaspi", "check")],
+        [("🔍 Найти товар", "find"), ("🧠 Анализ рынка Kaspi", "market_scan")],
+        [("🔗 Проверить Kaspi", "check")],
         [("🇨🇳 Проверить поставщика", "supplier"), ("💰 Рассчитать прибыль", "profit")],
         [("📁 Мои идеи", "workspace"), ("👤 Профиль", "profile")],
     ]))
+
+
+async def _run_market_scan(chat_id: int, query: str) -> None:
+    """Search a bounded public sample and turn it into an evidence-based shortlist."""
+    await _send(chat_id, f"Ищу до 5 открытых карточек Kaspi по запросу <b>{escape(query)}</b> и считаю конкуренцию, цену и потенциал…")
+    try:
+        products = await search_products(query)
+    except KaspiExtractionError as exc:
+        await _send(chat_id, f"Не смог провести анализ: {escape(str(exc))}")
+        return
+    ranked = sorted(((build_product_insight(product), product) for product in products), key=lambda pair: pair[0].score, reverse=True)
+    prices = [product.price_kzt for _, product in ranked if product.price_kzt]
+    reviews = [product.review_count for _, product in ranked if product.review_count is not None]
+    sellers = [product.seller_count for _, product in ranked if product.seller_count is not None]
+    summary = [f"<b>🧠 Анализ Kaspi: {escape(query)}</b>", f"Проверено карточек: <b>{len(ranked)}</b>"]
+    if prices:
+        summary.append(f"Диапазон цен: <b>{min(prices):,}–{max(prices):,} ₸</b>")
+    if reviews:
+        summary.append(f"Отзывы в выборке: <b>{min(reviews)}–{max(reviews)}</b>")
+    if sellers:
+        summary.append(f"Продавцы в карточках: <b>{min(sellers)}–{max(sellers)}</b>")
+    await _send(chat_id, "\n".join(summary) + "\n\nЭто выборка открытых карточек, не полный объём продаж Kaspi.")
+    for index, (insight, product) in enumerate(ranked[:3], start=1):
+        target = calculate_target_cny_price(product.price_kzt) if product.price_kzt else 0
+        await _send(chat_id,
+            f"<b>{index}. {escape(product.title)}</b>\n"
+            f"Оценка: <b>{insight.score}/100 · {insight.verdict}</b>\n"
+            f"Цена: <b>{product.price_kzt:,.0f} ₸</b> · отзывы: {product.review_count or 'нет данных'} · продавцы: {product.seller_count or 'нет данных'}\n"
+            f"Ориентир закупки для маржи 35%: <b>до {target} ¥</b>\n"
+            f"Риск: {escape((insight.concerns or ['Нужно проверить поставщика и характеристики товара.'])[0])}\nСледующий шаг: {escape(insight.next_step)}",
+            {"inline_keyboard": [[{"text": "Открыть Kaspi", "url": str(product.source_url)}], [{"text": "🔗 Разобрать эту карточку", "callback_data": "check"}]]})
+    _session(chat_id)["stage"] = None
 
 
 def _profile(chat_id: int) -> dict[str, Any]:
@@ -326,6 +359,7 @@ async def register_commands() -> None:
     await _call("setMyCommands", {"commands": [
         {"command": "start", "description": "Открыть меню"},
         {"command": "find", "description": "Найти товар"},
+        {"command": "analyze", "description": "Полный анализ Kaspi"},
         {"command": "check", "description": "Проверить товар Kaspi"},
         {"command": "ideas", "description": "Мои идеи"},
         {"command": "profit", "description": "Рассчитать прибыль"},
@@ -347,6 +381,8 @@ async def handle_update(update: dict[str, Any]) -> None:
         elif callback == "find": await _start_idea_flow(chat_id)
         elif callback == "check":
             _session(chat_id)["stage"] = "await_kaspi"; await _send(chat_id, "Пришли ссылку на товар Kaspi. Я покажу конкуренцию, ориентир закупки и следующий шаг.")
+        elif callback == "market_scan":
+            _session(chat_id)["stage"] = "market_scan"; await _send(chat_id, "Что искать на Kaspi? Например: <code>органайзеры для кухни</code> или <code>авто держатели для телефона</code>.")
         elif callback == "supplier":
             _session(chat_id)["stage"] = "await_supplier"; await _send(chat_id, "Пришли ссылку на 1688, Taobao, Alibaba, Pinduoduo или Tmall. Добавлю её к текущей идее.")
         elif callback == "workspace": await _show_workspace(chat_id)
@@ -366,7 +402,7 @@ async def handle_update(update: dict[str, Any]) -> None:
         elif callback.startswith("idea:"): await _open_idea(chat_id, int(callback.split(":", 1)[1]))
         return
     if command in {"/start", "/menu", "/help"}: await _home(chat_id); return
-    command_actions = {"/find": "find", "/check": "check", "/ideas": "workspace", "/profit": "profit", "/cargo": "cargo"}
+    command_actions = {"/find": "find", "/check": "check", "/analyze": "market_scan", "/ideas": "workspace", "/profit": "profit", "/cargo": "cargo"}
     if command in command_actions:
         await handle_update({"callback_query": {"id": str(update.get("update_id", "command")), "data": command_actions[command], "message": message}}); return
     if "kaspi.kz" in incoming.lower():
@@ -374,5 +410,8 @@ async def handle_update(update: dict[str, Any]) -> None:
         except KaspiExtractionError as exc: await _send(chat_id, f"Не смог прочитать карточку Kaspi: {escape(str(exc))}")
         return
     if detect_platform(incoming) != "Other": await _send_supplier(chat_id, incoming); return
+    if _session(chat_id).get("stage") == "market_scan":
+        await _run_market_scan(chat_id, incoming)
+        return
     if incoming and await _handle_text_stage(chat_id, incoming): return
     await _send(chat_id, "Я могу помочь найти товар или проверить уже найденный. Выбери сценарий — так дам точный следующий шаг.", _keyboard([[("🔍 Найти товар", "find"), ("🔗 Проверить Kaspi", "check")], [("⬅️ В меню", "home")]]))

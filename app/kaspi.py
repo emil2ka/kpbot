@@ -5,7 +5,10 @@ HTML selectors, and regex fallback parsing to guarantee maximum extraction succe
 """
 import json
 import re
+from asyncio import gather
 from datetime import datetime, timezone
+from html import unescape
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -161,3 +164,43 @@ async def fetch_product(url: str) -> KaspiProduct:
         image_url=image_url,
         scraped_at=datetime.now(timezone.utc),
     )
+
+
+async def search_products(query: str, *, limit: int = 5) -> list[KaspiProduct]:
+    """Find a small, public sample of Kaspi product pages and inspect each one.
+
+    Kaspi's search listing is rendered client-side, so we use a public web-search
+    result only to discover product URLs, then analyse the Kaspi pages directly.
+    This is intentionally bounded and never attempts to bypass Kaspi protections.
+    """
+    cleaned = " ".join(query.split())[:120]
+    if not cleaned:
+        raise KaspiExtractionError("Напишите, какой товар или категорию искать")
+    search_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(f"site:kaspi.kz/shop/p {cleaned}")
+    try:
+        async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=15.0) as client:
+            response = await client.get(search_url)
+            response.raise_for_status()
+    except Exception as exc:
+        raise KaspiExtractionError("Не удалось найти открытые карточки Kaspi") from exc
+
+    urls: list[str] = []
+    for href in BeautifulSoup(response.text, "html.parser").select("a[href]"):
+        candidate = unescape(href.get("href") or "")
+        if "uddg=" in candidate:
+            candidate = unquote(parse_qs(urlparse(candidate).query).get("uddg", [""])[0])
+        match = re.search(r"https?://(?:www\.)?kaspi\.kz/shop/p/[^?&#\"']+", candidate)
+        if match:
+            url = match.group(0)
+            if url not in urls:
+                urls.append(url)
+        if len(urls) >= limit:
+            break
+    if not urls:
+        raise KaspiExtractionError("По этому запросу не нашёл открытых карточек Kaspi")
+
+    results = await gather(*(fetch_product(url) for url in urls), return_exceptions=True)
+    products = [item for item in results if isinstance(item, KaspiProduct)]
+    if not products:
+        raise KaspiExtractionError("Карточки найдены, но Kaspi не отдал данные для анализа")
+    return products

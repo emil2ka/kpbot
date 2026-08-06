@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.models import ChinaIdea, ChinaIdeaResearch
+from app.models import ChinaIdea, ChinaIdeaResearch, KaspiProduct
 from app import telegram
 
 
@@ -63,3 +63,14 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
         with patch("app.telegram._call", new=self.capture_call):
             await telegram.handle_update(message_update(42, "12, 40, 30, 25, 50"))
         self.assertIn("Сравнение карго", self.messages[-1]["text"])
+
+    async def test_market_scan_searches_and_ranks_kaspi_cards(self):
+        products = [
+            KaspiProduct(source_url="https://kaspi.kz/shop/p/test-a-1/", title="Тест А", price_kzt=8990, review_count=60, seller_count=2, rating=4.8),
+            KaspiProduct(source_url="https://kaspi.kz/shop/p/test-b-2/", title="Тест Б", price_kzt=4990, review_count=5, seller_count=12),
+        ]
+        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram.search_products", new=AsyncMock(return_value=products)):
+            await telegram.handle_update(callback_update(42, "market_scan"))
+            await telegram.handle_update(message_update(42, "органайзеры"))
+        self.assertTrue(any("Анализ Kaspi" in payload["text"] for payload in self.messages))
+        self.assertTrue(any("Тест А" in payload["text"] for payload in self.messages))
