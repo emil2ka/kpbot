@@ -74,11 +74,11 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   -d "secret_token=$TELEGRAM_WEBHOOK_SECRET"
 ```
 
-Пользователь может отправить `/start`, затем ссылку на Kaspi. Бот покажет карточку с фото, ценой, оценкой потенциала и следующим действием. В меню уже есть точки входа для поиска идей, Китая, карго и прибыли.
+Главный путь — `/start` → **«Найти товар»**: бот уточняет бюджет, категорию и ограничения, предлагает гипотезы для проверки и сохраняет выбранную идею. Внутри одной идеи можно добавлять Kaspi-товар и ссылки поставщиков, затем считать экономику. Ссылка Kaspi остаётся быстрым входом для уже найденного товара.
 
 ## Подключение сервисов
 
-1. **Supabase**: создай проект → SQL Editor → выполни `supabase/migrations/001_kaspi_scans.sql`. В Project Settings → API скопируй `SUPABASE_URL` и **service_role** key в `.env` локально или в Secrets Render. Никогда не используй service_role key в браузере.
+1. **Supabase**: создай проект → SQL Editor → выполни миграции из `supabase/migrations/` по порядку, включая `005_telegram_workspace.sql`. В Project Settings → API скопируй `SUPABASE_URL` и **service_role** key в `.env` локально или в Secrets Render. Никогда не используй service_role key в браузере. Без Supabase бот работает, но история идей и профиль сохраняются только до перезапуска сервиса.
 2. **xAI**: отзови ключ, который был опубликован в чате, создай новый и укажи его только как `XAI_API_KEY`. Модель — `grok-4.3`.
 3. **Render**: загрузи проект в приватный GitHub-репозиторий → New → Blueprint → выбери репозиторий. `render.yaml` создаст web service; секреты введи в панели Render, включая Telegram-переменные.
 

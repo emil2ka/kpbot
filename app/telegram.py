@@ -1,34 +1,42 @@
-"""Minimal Telegram Bot API adapter without a framework dependency."""
+"""Conversation-first Telegram interface for the sourcing workspace."""
+from __future__ import annotations
+
 from html import escape
-from typing import Any
 import re
+from typing import Any
 
 import httpx
 
 from app.china import build_image_search_url, build_search_urls, detect_platform
-from app.china_api import get_china_data_provider
 from app.china_scraper import deep_extract_china_product
 from app.config import get_settings
-from app.database import save_supplier_link
-from app.economics import calculate_target_cny_price
+from app.database import (
+    get_telegram_profile, list_sourcing_items, save_sourcing_item,
+    save_sourcing_offer, save_supplier_link, save_telegram_profile,
+)
+from app.economics import calculate_economics, calculate_target_cny_price, compare_cargo
+from app.models import CargoQuoteRequest, EconomicsRequest
+from app.services import build_product_insight, generate_china_ideas, generate_chinese_keywords
 from app.kaspi import KaspiExtractionError, fetch_product
-from app.services import answer_sourcing_question, build_product_insight, generate_china_ideas, generate_chinese_keywords
-
-
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
+# A live conversation must have context. Supabase persists workspace data; this
+# tiny cache holds only the unfinished dialog and lets local/demo deployments work.
+_sessions: dict[int, dict[str, Any]] = {}
+_local_items: dict[int, list[dict[str, Any]]] = {}
 
-def _quick_actions(*actions: tuple[str, str]) -> dict[str, Any]:
-    return {"inline_keyboard": [
-        [{"text": label, "callback_data": callback} for label, callback in actions],
-    ]}
+
+def _session(chat_id: int) -> dict[str, Any]:
+    return _sessions.setdefault(chat_id, {"stage": None, "profile": {}, "ideas": [], "context": {}})
 
 
-def _link_button(label: str, url: str) -> dict[str, Any]:
-    return {"inline_keyboard": [
-        [{"text": label, "url": url}],
-    ]}
+def _keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
+    return {"inline_keyboard": [[{"text": label, "callback_data": value} for label, value in row] for row in rows]}
+
+
+def _url_keyboard(rows: list[list[dict[str, str]]]) -> dict[str, Any]:
+    return {"inline_keyboard": rows}
 
 
 async def _call(method: str, payload: dict[str, Any]) -> None:
@@ -39,138 +47,289 @@ async def _call(method: str, payload: dict[str, Any]) -> None:
         await client.post(TELEGRAM_API.format(token=settings.telegram_bot_token, method=method), json=payload)
 
 
-async def _send_message(chat_id: int, text: str, *, actions: tuple[tuple[str, str], ...] = (), reply_markup: dict[str, Any] | None = None) -> None:
+async def _send(chat_id: int, text: str, markup: dict[str, Any] | None = None) -> None:
     payload: dict[str, Any] = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    elif actions:
-        payload["reply_markup"] = _quick_actions(*actions)
+    if markup:
+        payload["reply_markup"] = markup
     await _call("sendMessage", payload)
 
 
-async def _send_product(chat_id: int, product: Any) -> None:
-    insight = build_product_insight(product)
-    price = f"{product.price_kzt:,} ₸" if product.price_kzt else "не прочитана"
+async def _home(chat_id: int) -> None:
+    _session(chat_id)["stage"] = None
+    await _send(chat_id, "<b>Kaspi Sourcing AI</b>\n\nПомогу найти товар, проверить спрос на Kaspi, подобрать поставщика и посчитать тестовую закупку.\n\nС чего начнём?", _keyboard([
+        [("🔍 Найти товар", "find"), ("🔗 Проверить Kaspi", "check")],
+        [("🇨🇳 Проверить поставщика", "supplier"), ("💰 Рассчитать прибыль", "profit")],
+        [("📁 Мои идеи", "workspace"), ("👤 Профиль", "profile")],
+    ]))
 
-    target_cny = calculate_target_cny_price(product.price_kzt) if product.price_kzt else 0.0
-    target_info = f"\n🎯 <b>Цель закупки (маржа 35%):</b> до <b>{target_cny} CNY</b> (~{int(target_cny * 72):,} ₸)\n" if target_cny > 0 else ""
 
-    keywords_zh = await generate_chinese_keywords(product.title)
-    search_urls = build_search_urls(keywords_zh, max_price_cny=target_cny if target_cny > 0 else None)
-    img_search_url = build_image_search_url(str(product.image_url)) if product.image_url else None
+def _profile(chat_id: int) -> dict[str, Any]:
+    session = _session(chat_id)
+    if not session["profile"]:
+        session["profile"] = get_telegram_profile(chat_id) or {
+            "target_margin_percent": 35, "excluded_categories": [],
+        }
+    return session["profile"]
 
-    text = (
-        f"<b>{escape(product.title)}</b>\n\n"
-        f"Потенциал: <b>{insight.score}/100 · {insight.verdict}</b>\n"
-        f"Цена Kaspi: <b>{price}</b>{target_info}\n"
-        f"Отзывы: {product.review_count or 'нет данных'} · Продавцы: {product.seller_count or 'нет данных'}\n\n"
-        f"<b>Запрос для Китая:</b> <code>{escape(keywords_zh)}</code>\n"
-        f"<b>Что вижу:</b> {insight.summary}\n"
-        f"<b>Следующий шаг:</b> {insight.next_step}"
+
+async def _show_profile(chat_id: int) -> None:
+    profile = _profile(chat_id)
+    excluded = ", ".join(profile.get("excluded_categories") or []) or "ничего"
+    budget = profile.get("test_budget_kzt")
+    budget_text = f"<b>{budget:,.0f} ₸</b>" if budget else "не задан"
+    await _send(chat_id,
+        "<b>👤 Профиль закупщика</b>\n"
+        f"Бюджет теста: {budget_text}\n"
+        f"Целевая маржа: <b>{profile.get('target_margin_percent', 35)}%</b>\n"
+        f"Исключить: {escape(excluded)}\n\nНастройки используются при подборе и расчётах.",
+        _keyboard([[("💳 Изменить бюджет", "profile_budget"), ("🎯 Маржа 35%", "profile_margin")], [("⬅️ В меню", "home")]]))
+
+
+async def _start_idea_flow(chat_id: int) -> None:
+    session = _session(chat_id)
+    session["stage"] = "idea_budget"
+    await _send(chat_id, "<b>Найдём товар для теста.</b>\nКакой бюджет на первую закупку? Это помогает отсечь неподходящие идеи.", _keyboard([
+        [("до 50 000 ₸", "budget:50000"), ("50–150 тыс. ₸", "budget:150000")],
+        [("150–300 тыс. ₸", "budget:300000"), ("Не знаю", "budget:0")],
+        [("⬅️ В меню", "home")],
+    ]))
+
+
+async def _ask_category(chat_id: int) -> None:
+    _session(chat_id)["stage"] = "idea_category"
+    await _send(chat_id, "Что тебе ближе? Можно нажать вариант или написать свою категорию.", _keyboard([
+        [("🏠 Дом", "category:дом"), ("🚗 Авто", "category:авто")],
+        [("✨ Красота", "category:красота"), ("🏃 Спорт", "category:спорт")],
+        [("🤷 Не знаю", "category:любая")],
+    ]))
+
+
+async def _ask_exclusions(chat_id: int) -> None:
+    _session(chat_id)["stage"] = "idea_exclusions"
+    await _send(chat_id, "Что лучше исключить?", _keyboard([
+        [("Без электроники", "exclude:electronics"), ("Без хрупкого", "exclude:fragile")],
+        [("Без одежды", "exclude:clothing"), ("Ничего", "exclude:none")],
+    ]))
+
+
+async def _generate_ideas(chat_id: int) -> None:
+    session, profile = _session(chat_id), _profile(chat_id)
+    context = session["context"]
+    request = (
+        f"Подбери товары для категории: {context.get('category', 'любая')}. "
+        f"Бюджет тестовой закупки: {profile.get('test_budget_kzt') or 'не задан'} KZT. "
+        f"Исключить: {', '.join(profile.get('excluded_categories') or ['ничего'])}. "
+        "Покажи только безопасные небрандовые гипотезы для ручной проверки."
     )
-
-    first_row = [{"text": f"🔎 1688 (до {target_cny}￥)" if target_cny > 0 else "🔎 1688", "url": search_urls["1688"]}]
-    if img_search_url:
-        first_row.append({"text": "🖼 По фото 1688", "url": img_search_url})
-    else:
-        first_row.append({"text": "🛍 Pinduoduo", "url": search_urls["pinduoduo"]})
-
-    markup = {
-        "inline_keyboard": [
-            first_row,
-            [{"text": "🛍 Pinduoduo", "url": search_urls["pinduoduo"]} if img_search_url else {"text": "💰 Посчитать прибыль", "callback_data": "profit"}, {"text": "💰 Посчитать прибыль", "callback_data": "profit"}] if img_search_url else [{"text": "🇨🇳 Добавить ссылку поставщика", "callback_data": "china"}],
-            [{"text": "🇨🇳 Добавить ссылку поставщика", "callback_data": "china"}],
-        ]
-    }
-    if product.image_url:
-        await _call("sendPhoto", {"chat_id": chat_id, "photo": str(product.image_url), "caption": text, "parse_mode": "HTML", "reply_markup": markup})
-    else:
-        await _send_message(chat_id, text, reply_markup=markup)
-
-
-
-async def _send_china_ideas(chat_id: int, request: str) -> bool:
+    await _send(chat_id, "Подбираю гипотезы под твои условия…")
     research = await generate_china_ideas(request)
     if not research:
-        return False
-    await _send_message(
-        chat_id,
-        f"<b>Ищу со стороны Китая</b>\n{escape(research.interpretation)}\n\n"
-        "Это 3 гипотезы. Открой поиск — там уже готовый китайский запрос; после выбора ссылки я сравню её с Kaspi и прибылью.",
-    )
-    for index, idea in enumerate(research.ideas, start=1):
-        source_result = await get_china_data_provider().search_suppliers(
-            idea.title_ru, idea.chinese_keywords
-        )
-        urls = source_result.search_urls
-        text = (
-            f"<b>{index}. {escape(idea.title_ru)}</b>\n"
-            f"<b>Запрос для Китая:</b> <code>{escape(idea.chinese_keywords)}</code>\n"
-            f"<b>Почему смотреть:</b> {escape(idea.why_interesting)}\n"
-            f"<b>Проверить:</b> {escape(idea.risk_to_check)}"
-        )
-        if source_result.live_items:
-            rows = []
-            offer_lines = []
-            for offer in source_result.live_items[:5]:
-                price = (
-                    f"{offer.price_cny:g} ¥" if offer.price_cny is not None
-                    else f"{offer.price_amount:g} {offer.price_currency}" if offer.price_amount is not None
-                    else "цена по запросу"
-                )
-                offer_lines.append(
-                    f"• <b>{price}</b> · MOQ {offer.moq} · {escape(offer.title[:70])}"
-                )
-                rows.append([{"text": f"{offer.platform} · {price}", "url": offer.detail_url}])
-            text += "\n\n<b>Реальные предложения поставщиков:</b>\n" + "\n".join(offer_lines)
-            rows.append([{"text": "📦 Сопоставить с Kaspi", "callback_data": "check"}])
-            markup = {"inline_keyboard": rows}
-        else:
-            text += "\n\n<i>Сейчас показаны точные запросы, не выдуманные цены. Для автоматической выдачи и сравнения нужен подключённый провайдер каталожных данных.</i>"
-            markup = {"inline_keyboard": [
-                [{"text": "🔎 Открыть 1688", "url": urls["1688"]}, {"text": "🌐 Alibaba", "url": urls["alibaba"]}],
-                [{"text": "🛍 Taobao", "url": urls["taobao"]}, {"text": "📦 Проверить Kaspi", "callback_data": "check"}],
-            ]}
-        await _send_message(chat_id, text, reply_markup=markup)
-    return True
+        await _send(chat_id, "Не смог подготовить персональные гипотезы сейчас. Попробуй ещё раз чуть позже или пришли название категории.", _keyboard([[("🔄 Попробовать снова", "find"), ("⬅️ В меню", "home")]]))
+        return
+    session["ideas"] = [idea.model_dump() for idea in research.ideas]
+    session["stage"] = None
+    await _send(chat_id, f"<b>Идеи для проверки</b>\n{escape(research.interpretation)}\n\nЭто гипотезы, а не подтверждённые тренды. Выбери ту, которую хочешь развить:")
+    for index, idea in enumerate(session["ideas"]):
+        await _send(chat_id,
+            f"<b>{index + 1}. {escape(idea['title_ru'])}</b>\n"
+            f"Почему подходит: {escape(idea['why_interesting'])}\n"
+            f"Проверить: {escape(idea['risk_to_check'])}",
+            _keyboard([[("Открыть эту идею", f"idea:{index}")]]))
 
 
-async def _send_niche_trends(chat_id: int) -> None:
-    from app.niche_finder import find_trending_sourcing_niches
-    trends = await find_trending_sourcing_niches()
-    await _send_message(
-        chat_id,
-        f"<b>💡 Идеи товаров из Китая для Kaspi</b>\n{escape(trends.summary_ru)}\n\n"
-        "Ниже три гипотезы с целевыми ценами закупки. Перед закупкой проверьте выдачу, вес и спрос:",
+async def _open_idea(chat_id: int, index: int) -> None:
+    session = _session(chat_id)
+    if index >= len(session["ideas"]):
+        await _home(chat_id)
+        return
+    idea = session["ideas"][index]
+    item_id = save_sourcing_item(chat_id, idea["title_ru"], notes=idea["why_interesting"])
+    local = {"title": idea["title_ru"], "status": "idea", "potential_score": None}
+    _local_items.setdefault(chat_id, []).insert(0, local)
+    session["context"] = {"idea": idea, "item_id": item_id}
+    urls = build_search_urls(idea["chinese_keywords"])
+    await _send(chat_id,
+        f"<b>Работаем с идеей: {escape(idea['title_ru'])}</b>\n"
+        f"Китайский запрос: <code>{escape(idea['chinese_keywords'])}</code>\n\n"
+        "Сначала посмотри похожие товары на Kaspi и варианты на 1688. Затем пришли любую найденную ссылку — я сохраню её в эту идею.",
+        _url_keyboard([
+            [{"text": "🔎 Искать на 1688", "url": urls["1688"]}, {"text": "🌐 Искать на Alibaba", "url": urls["alibaba"]}],
+            [{"text": "📊 Проверить Kaspi", "callback_data": "check"}],
+            [{"text": "📁 Мои идеи", "callback_data": "workspace"}],
+        ]))
+
+
+async def _send_kaspi_product(chat_id: int, product: Any) -> None:
+    session = _session(chat_id)
+    insight = build_product_insight(product)
+    context = session["context"]
+    context["kaspi"] = product
+    target = calculate_target_cny_price(product.price_kzt) if product.price_kzt else 0
+    keywords = await generate_chinese_keywords(product.title)
+    urls = build_search_urls(keywords, max_price_cny=target or None)
+    image_search = build_image_search_url(str(product.image_url)) if product.image_url else None
+    item_id = save_sourcing_item(chat_id, product.title, status="researching", kaspi_url=str(product.source_url), image_url=str(product.image_url) if product.image_url else None, potential_score=insight.score)
+    context["item_id"] = context.get("item_id") or item_id
+    title = escape(product.title)
+    text = (
+        f"<b>{title}</b>\n\n"
+        f"Оценка: <b>{insight.score}/100 · {insight.verdict}</b>\n"
+        f"Цена Kaspi: <b>{product.price_kzt:,.0f} ₸</b>\n" if product.price_kzt else f"<b>{title}</b>\n\nЦена Kaspi не прочитана.\n"
+    ) + (
+        f"Отзывы: {product.review_count or 'нет данных'} · Продавцы: {product.seller_count or 'нет данных'}\n"
+        f"Цель закупки для маржи 35%: <b>до {target} ¥</b>\n\n"
+        f"{escape(insight.summary)}\nСледующий шаг: {escape(insight.next_step)}"
     )
-    for idx, opp in enumerate(trends.opportunities, start=1):
-        text = (
-            f"<b>{idx}. {escape(opp.title_ru)}</b>\n"
-            f"<b>Категория:</b> {escape(opp.category_ru)}\n"
-            f"<b>Продажа на Kaspi:</b> <b>{opp.suggested_sale_price_kzt:,.0f} ₸</b>\n"
-            f"🎯 <b>Целевая закупка (1688):</b> до <b>{opp.target_purchase_cny} CNY</b> (~{int(opp.target_purchase_cny * 72):,} ₸)\n"
-            f"📈 <b>Ориентир модели:</b> маржа {opp.estimated_margin_percent}% (ROI: {opp.estimated_roi_percent}%)\n\n"
-            f"<b>Почему проверить:</b> {escape(opp.why_promising)}\n"
-            f"<b>Риск:</b> {escape(opp.risk_factor)}"
+    rows: list[list[dict[str, str]]] = [[{"text": "🔎 Найти на 1688", "url": urls["1688"]}]]
+    if image_search:
+        rows[0].append({"text": "🖼 По фото", "url": image_search})
+    rows.append([{"text": "🇨🇳 Добавить поставщика", "callback_data": "supplier"}])
+    if context.get("supplier"):
+        rows.append([{"text": "💰 Сравнить с поставщиком", "callback_data": "compare"}])
+    rows.append([{"text": "📁 Сохранено в мои идеи", "callback_data": "workspace"}])
+    if product.image_url:
+        await _call("sendPhoto", {"chat_id": chat_id, "photo": str(product.image_url), "caption": text, "parse_mode": "HTML", "reply_markup": _url_keyboard(rows)})
+    else:
+        await _send(chat_id, text, _url_keyboard(rows))
+
+
+async def _send_supplier(chat_id: int, raw: str) -> None:
+    try:
+        supplier = await deep_extract_china_product(raw)
+    except Exception:
+        await _send(chat_id, "Не смог прочитать ссылку поставщика. Открой карточку в браузере и пришли полную ссылку ещё раз.")
+        return
+    session = _session(chat_id)
+    session["context"]["supplier"] = supplier
+    try:
+        save_supplier_link(supplier.platform, supplier.raw_url, supplier.canonical_url, supplier.item_id, supplier.price_cny)
+        save_sourcing_offer(
+            session["context"].get("item_id"), supplier.platform, supplier.canonical_url,
+            unit_price_cny=supplier.price_cny, weight_kg=supplier.estimated_weight_kg,
+            notes="; ".join(supplier.data_notes),
         )
-        markup = {"inline_keyboard": [
-            [{"text": "🔎 Искать Фабрику на 1688", "url": opp.direct_1688_url}],
-            [{"text": "💰 Рассчитать юнит-экономику", "callback_data": "profit"}],
-        ]}
-        await _send_message(chat_id, text, reply_markup=markup)
+    except Exception:
+        pass
+    price = f"<b>{supplier.price_cny:g} ¥</b>" if supplier.price_cny is not None else "не извлечена"
+    notes = "\n".join(f"• {escape(note)}" for note in supplier.data_notes[:2])
+    await _send(chat_id,
+        f"<b>🇨🇳 Поставщик: {escape(supplier.platform)}</b>\n"
+        f"Товар: {escape(supplier.title_ru or supplier.title_zh)}\n"
+        f"Цена: {price}\n{notes}\n\n"
+        "Ссылка добавлена к текущей идее. Теперь сравни её с товаром Kaspi или посчитай экономику.",
+        _keyboard([[("🔗 Добавить Kaspi-ссылку", "check"), ("💰 Рассчитать прибыль", "compare")], [("📁 Мои идеи", "workspace")]]))
+
+
+def _render_economics(data: EconomicsRequest) -> str:
+    result = calculate_economics(data)
+    return (
+        "<b>💰 Экономика тестовой партии</b>\n"
+        f"Себестоимость 1 шт.: <b>{result.unit_cost_kzt:,.0f} ₸</b>\n"
+        f"Прибыль 1 шт.: <b>{result.profit_per_unit_kzt:,.0f} ₸</b>\n"
+        f"Маржа: <b>{result.margin_percent}%</b> · ROI: <b>{result.roi_percent}%</b>\n"
+        f"Прибыль партии: <b>{result.total_profit_kzt:,.0f} ₸</b>\n"
+        f"Максимальная закупочная цена: <b>{result.maximum_purchase_price_cny} ¥</b>\n\n"
+        f"{escape(result.recommendation)}\n<i>В расчёте: комиссия Kaspi 12%, резерв возвратов 5%, упаковка 150 ₸. Проверь реальную ставку карго перед оплатой.</i>"
+    )
+
+
+async def _compare_current(chat_id: int) -> None:
+    context = _session(chat_id)["context"]
+    product, supplier = context.get("kaspi"), context.get("supplier")
+    if not product:
+        await _send(chat_id, "Сначала пришли ссылку на аналогичный товар Kaspi — тогда сравню цену продажи с поставщиком.", _keyboard([[("🔗 Добавить Kaspi", "check")]]))
+        return
+    if not supplier or supplier.price_cny is None:
+        _session(chat_id)["stage"] = "profit_price"
+        await _send(chat_id, "Не вижу точную цену поставщика. Напиши цену за 1 штуку в CNY, например: <code>18.5</code>.")
+        return
+    data = EconomicsRequest(sale_price_kzt=product.price_kzt or 1, unit_price_cny=supplier.price_cny, quantity=20, cargo_cost_kzt=24000)
+    await _send(chat_id, _render_economics(data), _keyboard([[("✏️ Изменить параметры", "profit"), ("📦 Сравнить карго", "cargo")], [("📁 К моим идеям", "workspace")]]))
+
+
+async def _show_workspace(chat_id: int) -> None:
+    remote = list_sourcing_items(chat_id)
+    items = remote or _local_items.get(chat_id, [])
+    if not items:
+        await _send(chat_id, "<b>📁 Мои идеи</b>\nПока пусто. Начни с подбора — сохраню выбранную гипотезу здесь.", _keyboard([[("🔍 Найти товар", "find"), ("⬅️ В меню", "home")]]))
+        return
+    labels = {"idea": "идея", "researching": "изучаю", "sample": "тестирую", "ordered": "заказано", "rejected": "не подошло"}
+    lines = [f"• <b>{escape(str(item['title']))}</b> — {labels.get(item.get('status'), item.get('status', 'идея'))}" for item in items]
+    await _send(chat_id, "<b>📁 Мои идеи</b>\n" + "\n".join(lines) + "\n\nИстория сохраняется в Supabase, если он подключён. В этой сессии выбранная идея также не потеряется.", _keyboard([[("🔍 Найти ещё товар", "find"), ("⬅️ В меню", "home")]]))
+
+
+def _number(text: str) -> float | None:
+    match = re.search(r"\d+(?:[.,]\d+)?", text.replace(" ", ""))
+    return float(match.group(0).replace(",", ".")) if match else None
+
+
+async def _handle_text_stage(chat_id: int, incoming: str) -> bool:
+    session = _session(chat_id)
+    stage = session.get("stage")
+    if stage == "idea_budget":
+        value = _number(incoming)
+        if value is None:
+            await _send(chat_id, "Напиши сумму цифрами, например <code>120000</code>, или выбери вариант кнопкой.")
+            return True
+        _profile(chat_id)["test_budget_kzt"] = value
+        save_telegram_profile(chat_id, _profile(chat_id))
+        await _ask_category(chat_id)
+        return True
+    if stage == "idea_category":
+        session["context"]["category"] = incoming[:80]
+        await _ask_exclusions(chat_id)
+        return True
+    if stage == "profit_price":
+        price = _number(incoming)
+        product = session["context"].get("kaspi")
+        if price is None or not product or not product.price_kzt:
+            await _send(chat_id, "Нужна цена в CNY и сохранённая Kaspi-ссылка. Начни с проверки товара Kaspi.")
+            return True
+        await _send(chat_id, _render_economics(EconomicsRequest(sale_price_kzt=product.price_kzt, unit_price_cny=price, quantity=20, cargo_cost_kzt=24000)))
+        session["stage"] = None
+        return True
+    if stage == "profit_manual":
+        # Commas are the documented field separator. Decimal values can use a dot.
+        values = re.findall(r"\d+(?:\.\d+)?", incoming.replace(",", " "))
+        if len(values) < 4:
+            await _send(chat_id, "Нужно 4 значения: <code>продажа KZT, цена CNY, количество, доставка KZT</code>. Например: <code>8990, 18, 50, 60000</code>")
+            return True
+        sale, cny, quantity, cargo = [float(value) for value in values[:4]]
+        await _send(chat_id, _render_economics(EconomicsRequest(sale_price_kzt=sale, unit_price_cny=cny, quantity=int(quantity), cargo_cost_kzt=cargo)))
+        session["stage"] = None
+        return True
+    if stage == "cargo":
+        values = re.findall(r"\d+(?:\.\d+)?", incoming.replace(",", " "))
+        if len(values) < 5:
+            await _send(chat_id, "Нужно: <code>вес кг, длина, ширина, высота см, количество</code>. Например: <code>12, 40, 30, 25, 50</code>")
+            return True
+        weight, length, width, height, quantity = [float(value) for value in values[:5]]
+        quotes = compare_cargo(CargoQuoteRequest(actual_weight_kg=weight, length_cm=length, width_cm=width, height_cm=height, quantity=int(quantity)))
+        text = "<b>📦 Сравнение карго</b>\n" + "\n".join(f"• <b>{q.method}</b>: {q.total_cost_kzt:,.0f} ₸, {q.delivery_days}, {q.cost_per_unit_kzt:,.0f} ₸/шт." for q in quotes)
+        await _send(chat_id, text + "\n\n<i>Это ориентировочные тарифы. Подтверди стоимость у своего карго-партнёра.</i>")
+        session["stage"] = None
+        return True
+    if stage == "profile_budget":
+        value = _number(incoming)
+        if value is None:
+            await _send(chat_id, "Напиши бюджет цифрами, например <code>150000</code>.")
+            return True
+        _profile(chat_id)["test_budget_kzt"] = value
+        save_telegram_profile(chat_id, _profile(chat_id))
+        session["stage"] = None
+        await _show_profile(chat_id)
+        return True
+    return False
 
 
 async def register_commands() -> None:
-    """Expose the stable navigation in Telegram's native menu beside the composer."""
     await _call("setMyCommands", {"commands": [
-        {"command": "start", "description": "Начать работу"},
-        {"command": "trends", "description": "💡 Идеи товаров 1688"},
-        {"command": "ideas", "description": "Найти идеи товаров"},
+        {"command": "start", "description": "Открыть меню"},
+        {"command": "find", "description": "Найти товар"},
         {"command": "check", "description": "Проверить товар Kaspi"},
-        {"command": "china", "description": "Найти поставщика"},
+        {"command": "ideas", "description": "Мои идеи"},
+        {"command": "profit", "description": "Рассчитать прибыль"},
         {"command": "cargo", "description": "Сравнить карго"},
-        {"command": "profit", "description": "Посчитать прибыль"},
-        {"command": "help", "description": "Как пользоваться ботом"},
     ]})
 
 
@@ -182,115 +341,38 @@ async def handle_update(update: dict[str, Any]) -> None:
     callback = update.get("callback_query", {}).get("data")
     incoming = (update.get("message", {}).get("text") or "").strip()
     command = incoming.split(maxsplit=1)[0].lower() if incoming else ""
-
     if callback:
         await _call("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
-        if callback == "ideas":
-            await _send_message(chat_id, "Подбираю 3 товарные гипотезы со стороны Китая…")
-            if await _send_china_ideas(chat_id, "Самостоятельно найди компактные небрандовые товары для перепродажи на Kaspi."):
-                return
-        elif callback == "trends":
-            await _send_niche_trends(chat_id)
-            return
-        prompts = {
-            "check": "Пришли ссылку на товар Kaspi — я покажу карточку с фото, ключевыми словами на китайском для 1688 и первичной оценкой.",
-            "china": "Пришли ссылку на 1688, Alibaba, Taobao, Pinduoduo или Tmall. Я распознаю платформу, содам чистую ссылку и сохраню для расчёта юнит-экономики.",
-            "cargo": "Для расчёта напиши: <i>вес кг, длина×ширина×высота см, количество, срочно/обычно</i>. Например: <i>12 кг, 40x30x25, 50, обычно</i>.",
-            "profit": "Для расчёта прибыли используй API /api/v1/economics/calculate или пришли данные в формате: <i>продажа, цена CNY, количество, доставка KZT</i>.",
-            "help": "Напиши задачу обычным текстом, пришли ссылку Kaspi или ссылку на 1688. Все действия доступны в меню.",
-        }
-        await _send_message(chat_id, prompts.get(callback, "Выбери действие из меню."))
+        if callback == "home": await _home(chat_id)
+        elif callback == "find": await _start_idea_flow(chat_id)
+        elif callback == "check":
+            _session(chat_id)["stage"] = "await_kaspi"; await _send(chat_id, "Пришли ссылку на товар Kaspi. Я покажу конкуренцию, ориентир закупки и следующий шаг.")
+        elif callback == "supplier":
+            _session(chat_id)["stage"] = "await_supplier"; await _send(chat_id, "Пришли ссылку на 1688, Taobao, Alibaba, Pinduoduo или Tmall. Добавлю её к текущей идее.")
+        elif callback == "workspace": await _show_workspace(chat_id)
+        elif callback == "profile": await _show_profile(chat_id)
+        elif callback == "profile_budget": _session(chat_id)["stage"] = "profile_budget"; await _send(chat_id, "Напиши комфортный бюджет на тестовую закупку в тенге.")
+        elif callback == "profile_margin":
+            profile = _profile(chat_id); profile["target_margin_percent"] = 35; save_telegram_profile(chat_id, profile); await _show_profile(chat_id)
+        elif callback == "profit": _session(chat_id)["stage"] = "profit_manual"; await _send(chat_id, "Напиши: <code>продажа KZT, цена CNY, количество, доставка KZT</code>.\nНапример: <code>8990, 18, 50, 60000</code>")
+        elif callback == "compare": await _compare_current(chat_id)
+        elif callback == "cargo": _session(chat_id)["stage"] = "cargo"; await _send(chat_id, "Напиши: <code>вес кг, длина, ширина, высота см, количество</code>.\nНапример: <code>12, 40, 30, 25, 50</code>")
+        elif callback.startswith("budget:"):
+            _profile(chat_id)["test_budget_kzt"] = int(callback.split(":", 1)[1]); save_telegram_profile(chat_id, _profile(chat_id)); await _ask_category(chat_id)
+        elif callback.startswith("category:"):
+            _session(chat_id)["context"]["category"] = callback.split(":", 1)[1]; await _ask_exclusions(chat_id)
+        elif callback.startswith("exclude:"):
+            value = callback.split(":", 1)[1]; _profile(chat_id)["excluded_categories"] = [] if value == "none" else [value]; save_telegram_profile(chat_id, _profile(chat_id)); await _generate_ideas(chat_id)
+        elif callback.startswith("idea:"): await _open_idea(chat_id, int(callback.split(":", 1)[1]))
         return
-
-    if command in {"/start", "/menu", "/help"}:
-        await _send_message(
-            chat_id,
-            "<b>Kaspi Sourcing AI</b>\nНапиши задачу своими словами, пришли ссылку Kaspi или ссылку 1688/Taobao/Alibaba. Все действия — в меню рядом с полем ввода.",
-            actions=(("🔥 Тренды Ниши", "trends"), ("🔎 Проверить товар", "check")),
-        )
-        return
-
-    if command == "/trends":
-        await _send_niche_trends(chat_id)
-        return
-
-    command_callbacks = {"/ideas": "ideas", "/check": "check", "/china": "china", "/cargo": "cargo", "/profit": "profit", "/trends": "trends"}
-    if command in command_callbacks:
-        await handle_update({"callback_query": {"id": update.get("update_id", "command"), "data": command_callbacks[command], "message": message}})
-        return
-
-
+    if command in {"/start", "/menu", "/help"}: await _home(chat_id); return
+    command_actions = {"/find": "find", "/check": "check", "/ideas": "workspace", "/profit": "profit", "/cargo": "cargo"}
+    if command in command_actions:
+        await handle_update({"callback_query": {"id": str(update.get("update_id", "command")), "data": command_actions[command], "message": message}}); return
     if "kaspi.kz" in incoming.lower():
-        try:
-            await _send_product(chat_id, await fetch_product(incoming))
-        except KaspiExtractionError as exc:
-            await _send_message(chat_id, f"Не смог прочитать карточку: {exc}")
+        try: await _send_kaspi_product(chat_id, await fetch_product(incoming))
+        except KaspiExtractionError as exc: await _send(chat_id, f"Не смог прочитать карточку Kaspi: {escape(str(exc))}")
         return
-
-    # Check if incoming text is a Chinese platform link (1688, taobao, alibaba, pinduoduo, tmall, dewu)
-    platform = detect_platform(incoming)
-    if platform != "Other":
-        deep_res = await deep_extract_china_product(incoming)
-        try:
-            save_supplier_link(
-                platform=deep_res.platform,
-                raw_url=deep_res.raw_url,
-                canonical_url=deep_res.canonical_url,
-                item_id=deep_res.item_id,
-                unit_price_cny=deep_res.price_cny,
-            )
-        except Exception:
-            pass
-
-        # Build price tiers text
-        tiers_text = ""
-        if deep_res.price_tiers:
-            tiers_list = []
-            for t in deep_res.price_tiers:
-                max_str = f"–{t.max_quantity}" if t.max_quantity else "+"
-                tiers_list.append(f"• {t.min_quantity}{max_str} шт: <b>{t.price_cny} ¥</b>")
-            tiers_text = "\n<b>Оптовые цены (MOQ):</b>\n" + "\n".join(tiers_list) + "\n"
-
-        # Build SKU text
-        sku_text = ""
-        if deep_res.sku_variants:
-            variants_list = [f"• {v.name_ru or v.name_zh} ({v.price_cny} ¥)" for v in deep_res.sku_variants[:3]]
-            sku_text = "\n<b>Варианты (SKU):</b>\n" + "\n".join(variants_list) + "\n"
-
-        supplier_info = ""
-        if deep_res.supplier.company_name:
-            supplier_info = f"\n🏭 <b>Поставщик:</b> {escape(deep_res.supplier.company_name)}"
-            if deep_res.supplier.location:
-                supplier_info += f" ({escape(deep_res.supplier.location)})"
-        price_info = f"<b>Базовая цена:</b> <b>{deep_res.price_cny} CNY</b> (~{int(deep_res.price_cny * 72):,} ₸)\n" if deep_res.price_cny is not None else "<b>Цена:</b> не извлечена — проверь на карточке поставщика.\n"
-        notes = "\n".join(f"• {escape(note)}" for note in deep_res.data_notes)
-
-        reply_text = (
-        f"🇨🇳 <b>Карточка поставщика ({deep_res.platform})</b>\n"
-            f"<b>Товар:</b> {escape(deep_res.title_ru)}\n"
-            f"{price_info}{tiers_text}{sku_text}{supplier_info}\n"
-            f"<b>Чистая ссылка:</b> {deep_res.canonical_url}\n\n"
-            f"{notes}\n\nОтправь ссылку Kaspi для полного сопоставления маржинальности."
-        )
-        markup = {
-            "inline_keyboard": [
-                [{"text": "💰 Расчёт прибыли", "callback_data": "profit"}, {"text": "📦 Проверить Kaspi", "callback_data": "check"}],
-                [{"text": "📄 Бланк закупки для Карго", "callback_data": "profit"}],
-            ]
-        }
-        if deep_res.images:
-            await _call("sendPhoto", {"chat_id": chat_id, "photo": deep_res.images[0], "caption": reply_text, "parse_mode": "HTML", "reply_markup": markup})
-        else:
-            await _send_message(chat_id, reply_text, reply_markup=markup)
-        return
-
-
-    if incoming:
-        if await _send_china_ideas(chat_id, incoming):
-            return
-        answer = await answer_sourcing_question(incoming)
-        await _send_message(
-            chat_id,
-            escape(answer) if answer else "Понял задачу. Пришли ссылку Kaspi или ссылку на 1688/Taobao — я покажу аналитику и помогу посчитать прибыль.",
-            actions=(("🔎 Проверить ссылку", "check"),),
-        )
+    if detect_platform(incoming) != "Other": await _send_supplier(chat_id, incoming); return
+    if incoming and await _handle_text_stage(chat_id, incoming): return
+    await _send(chat_id, "Я могу помочь найти товар или проверить уже найденный. Выбери сценарий — так дам точный следующий шаг.", _keyboard([[("🔍 Найти товар", "find"), ("🔗 Проверить Kaspi", "check")], [("⬅️ В меню", "home")]]))

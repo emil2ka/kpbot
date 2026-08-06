@@ -129,6 +129,23 @@ async def generate_chinese_keywords(title_ru: str) -> str:
     s = get_settings()
     if not s.xai_configured:
         return title_ru
+    prompt = (
+        "Переведи название товара на китайский язык для оптового поиска на 1688.com. "
+        "Используй популярные китайские торговые термины и ключевые слова (B2B). "
+        "Выдай ТОЛЬКО иероглифы (ключевые слова через пробел), без лишних знаков и объяснений.\n\n"
+        f"Товар: {title_ru}"
+    )
+    try:
+        async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
+            response = await client.chat.completions.create(
+                model=s.xai_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+        result = response.choices[0].message.content
+        return normalize_search_keywords(result) if result else title_ru
+    except Exception:
+        return title_ru
 
 
 async def generate_global_search_keywords(title_ru: str) -> str:
@@ -149,24 +166,6 @@ async def generate_global_search_keywords(title_ru: str) -> str:
                 temperature=0.1,
             )
         return (response.choices[0].message.content or title_ru).strip()
-    except Exception:
-        return title_ru
-
-    prompt = (
-        "Переведи название товара на китайский язык для оптового поиска на 1688.com. "
-        "Используй популярные китайские торговые термины и ключевые слова (B2B). "
-        "Выдай ТОЛЬКО иероглифы (ключевые слова через пробел), без лишних знаков и объяснений.\n\n"
-        f"Товар: {title_ru}"
-    )
-    try:
-        async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
-            response = await client.chat.completions.create(
-                model=s.xai_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-            )
-        res = response.choices[0].message.content
-        return normalize_search_keywords(res) if res else title_ru
     except Exception:
         return title_ru
 

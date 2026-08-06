@@ -127,3 +127,69 @@ def get_cached_youtube_signal(query: str) -> YouTubeTrendSignal | None:
         return YouTubeTrendSignal(query=query, observed_at=observed_at, video_count_30d=row["video_count_30d"], video_count_7d=row["video_count_7d"], total_views=row["total_views"], median_views_per_day=row["median_views_per_day"], status="cached", source_note="Cached official YouTube observation (under 24 hours old)")
     except Exception:
         return None
+
+
+def save_telegram_profile(telegram_id: int, profile: dict) -> bool:
+    """Persist preferences; the Telegram UI still works when Supabase is absent."""
+    if not get_settings().supabase_configured:
+        return False
+    try:
+        _client().table("telegram_profiles").upsert({
+            "telegram_id": telegram_id,
+            "city": profile.get("city"),
+            "test_budget_kzt": profile.get("test_budget_kzt"),
+            "target_margin_percent": profile.get("target_margin_percent", 35),
+            "excluded_categories": profile.get("excluded_categories", []),
+        }).execute()
+        return True
+    except Exception:
+        return False
+
+
+def get_telegram_profile(telegram_id: int) -> dict | None:
+    if not get_settings().supabase_configured:
+        return None
+    try:
+        rows = _client().table("telegram_profiles").select("*").eq("telegram_id", telegram_id).limit(1).execute().data
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def save_sourcing_item(telegram_id: int, title: str, *, status: str = "idea", notes: str | None = None, kaspi_url: str | None = None, image_url: str | None = None, potential_score: int | None = None) -> str | None:
+    if not get_settings().supabase_configured:
+        return None
+    try:
+        result = _client().table("sourcing_items").insert({
+            "owner_telegram_id": telegram_id, "title": title, "status": status,
+            "notes": notes, "kaspi_url": kaspi_url, "image_url": image_url,
+            "potential_score": potential_score,
+        }).execute()
+        return result.data[0]["id"] if result.data else None
+    except Exception:
+        return None
+
+
+def list_sourcing_items(telegram_id: int, limit: int = 8) -> list[dict]:
+    if not get_settings().supabase_configured:
+        return []
+    try:
+        return _client().table("sourcing_items").select("id,title,status,potential_score,updated_at").eq("owner_telegram_id", telegram_id).order("updated_at", desc=True).limit(limit).execute().data
+    except Exception:
+        return []
+
+
+def save_sourcing_offer(sourcing_item_id: str | None, platform: str, source_url: str, *, unit_price_cny: float | None = None, minimum_order_quantity: int | None = None, weight_kg: float | None = None, notes: str | None = None) -> bool:
+    """Attach a supplier to the exact idea the user is currently evaluating."""
+    if not sourcing_item_id or not get_settings().supabase_configured:
+        return False
+    try:
+        _client().table("supplier_offers").insert({
+            "sourcing_item_id": sourcing_item_id, "platform": platform,
+            "source_url": source_url, "unit_price_cny": unit_price_cny,
+            "minimum_order_quantity": minimum_order_quantity,
+            "weight_kg": weight_kg, "notes": notes,
+        }).execute()
+        return True
+    except Exception:
+        return False
