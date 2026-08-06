@@ -134,7 +134,7 @@ async def _ask_category(chat_id: int) -> None:
 
 async def _ask_product_type(chat_id: int) -> None:
     _session(chat_id)["stage"] = "idea_type"
-    await _send(chat_id, "Какой тип товара интереснее? Это помогает не смешивать разные сценарии продаж.", _keyboard([
+    await _send(chat_id, "Какой формат товара интереснее? Этот шаг можно пропустить, если важна только категория.", _keyboard([
         [("🧰 Практичный для дома", "type:utility"), ("🎁 Подарочный", "type:gift")],
         [("🔁 Расходник / повторная покупка", "type:repeat"), ("📈 Не знаю", "type:any")],
     ]))
