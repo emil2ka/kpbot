@@ -62,6 +62,7 @@ class EconomicsRequest(BaseModel):
     advertising_per_unit_kzt: float = Field(default=0, ge=0)
     return_reserve_percent: float = Field(default=5, ge=0, le=100)
     customs_per_unit_kzt: float = Field(default=0, ge=0)
+    target_margin_percent: float = Field(default=35, ge=0, le=100)
 
 
 class EconomicsResult(BaseModel):
@@ -104,6 +105,8 @@ class CargoQuote(BaseModel):
     insurance_included: bool
     fit_score: int
     recommendation: str
+    is_estimate: bool = True
+    pricing_note: str = "Оценка по демонстрационному тарифу; подтвердите цену у карго-партнёра."
 
 
 class ChinaParseRequest(BaseModel):

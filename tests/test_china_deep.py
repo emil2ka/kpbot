@@ -100,9 +100,19 @@ class TestChinaDeepFeatures(unittest.TestCase):
         self.assertEqual(len(res.opportunities), 3)
         self.assertGreater(res.opportunities[0].estimated_margin_percent, 30.0)
         self.assertIn("1688.com", res.opportunities[0].direct_1688_url)
+        self.assertIn("гипотезы", res.summary_ru.lower())
+
+    def test_cargo_quotes_are_marked_as_estimates(self):
+        from app.economics import compare_cargo
+        from app.models import CargoQuoteRequest
+
+        quotes = compare_cargo(CargoQuoteRequest(
+            actual_weight_kg=10, length_cm=30, width_cm=30, height_cm=30,
+        ))
+        self.assertTrue(all(quote.is_estimate for quote in quotes))
+        self.assertTrue(all(quote.pricing_note for quote in quotes))
 
 
 if __name__ == "__main__":
     unittest.main()
-
 

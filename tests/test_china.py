@@ -3,6 +3,10 @@ import unittest
 from app.china import build_image_search_url, build_search_urls, canonicalize_url, detect_platform, extract_item_id, extract_price_hint, extract_url_from_text, normalize_search_keywords, parse_china_url
 from app.china_api import get_china_data_provider
 from app.economics import calculate_target_cny_price
+from app.china_live import _extract_1688_items
+from app.made_in_china import extract_made_in_china_items
+from app.models import EconomicsRequest
+from app.economics import calculate_economics
 
 
 class TestChinaIntegration(unittest.TestCase):
@@ -72,6 +76,48 @@ class TestChinaIntegration(unittest.TestCase):
         self.assertGreater(res.target_cny_price, 0.0)
         self.assertIn("1688.com", res.search_urls["1688"])
         self.assertIsNotNone(res.image_search_url)
+
+    def test_1688_payload_parser_keeps_offer_fields_together(self):
+        html = '''
+        {"offerId":"12345","title":"不锈钢 保温杯","price":"18.5"}
+        {"offerId":"67890","title":"高价商品","price":"99.0"}
+        '''
+        items = _extract_1688_items(html, target_cny=50)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "不锈钢 保温杯")
+        self.assertEqual(items[0]["price_cny"], 18.5)
+        self.assertEqual(items[0]["detail_url"], "https://detail.1688.com/offer/12345.html")
+
+    def test_maximum_purchase_price_uses_all_cost_assumptions(self):
+        result = calculate_economics(EconomicsRequest(
+            sale_price_kzt=10_000,
+            unit_price_cny=20,
+            quantity=10,
+            exchange_rate_cny_kzt=100,
+            cargo_cost_kzt=10_000,
+            packaging_per_unit_kzt=100,
+            customs_per_unit_kzt=50,
+            advertising_per_unit_kzt=200,
+            kaspi_fee_percent=10,
+            return_reserve_percent=5,
+            target_margin_percent=35,
+        ))
+        # (10,000 * .65 - 1,000 fee - 500 reserve - 200 ad - 1,000 cargo
+        #  - 100 packaging - 50 customs) / 100 = 36.5 CNY.
+        self.assertEqual(result.maximum_purchase_price_cny, 36.5)
+
+    def test_made_in_china_parser_preserves_usd_price_and_moq(self):
+        html = '''
+        <div class="products-item"><h2 class="product-name"><a title="Vacuum Flask" href="https://supplier.example/product">Flask</a></h2>
+        <strong class="price">US$<span>3.60</span>-<span>3.90</span></strong>
+        <span> 500 Pieces</span><span class="moq-text">(MOQ)</span>
+        <span title="Example Factory">Example Factory</span></div></div></div></body>
+        '''
+        items = extract_made_in_china_items(html)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["price_amount"], 3.6)
+        self.assertEqual(items[0]["price_currency"], "USD")
+        self.assertEqual(items[0]["moq"], 500)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,12 @@ class KaspiExtractionError(RuntimeError):
     pass
 
 
+def _is_kaspi_host(host: str | None) -> bool:
+    """Accept kaspi.kz and its subdomains, never look-alike domains."""
+    normalized = (host or "").lower().rstrip(".")
+    return normalized == "kaspi.kz" or normalized.endswith(".kaspi.kz")
+
+
 def _number(value: str | None) -> int | None:
     if not value:
         return None
@@ -50,9 +56,12 @@ def _extract_meta(soup: BeautifulSoup, name: str) -> str | None:
 
 async def fetch_product(url: str) -> KaspiProduct:
     """Fetch and deeply parse a Kaspi.kz product URL using 5 resilient fallback strategies."""
-    parsed_url = httpx.URL(url)
-    if "kaspi.kz" not in parsed_url.host.lower():
-        raise KaspiExtractionError("Разрешены только ссылки kaspi.kz")
+    try:
+        parsed_url = httpx.URL(url)
+    except httpx.InvalidURL as exc:
+        raise KaspiExtractionError("Некорректная ссылка Kaspi") from exc
+    if parsed_url.scheme != "https" or not _is_kaspi_host(parsed_url.host):
+        raise KaspiExtractionError("Разрешены только HTTPS-ссылки kaspi.kz")
 
     headers = {
         "User-Agent": USER_AGENT,
@@ -138,7 +147,9 @@ async def fetch_product(url: str) -> KaspiProduct:
     # Sellers count
     page_text = soup.get_text(" ", strip=True)
     seller_match = re.search(r"(\d[\d\s]*)\s*(?:продавц|seller|магазин)", page_text, re.IGNORECASE)
-    seller_count = _number(seller_match.group(1)) if seller_match else 1
+    # Missing data must not be reported as one seller: it would make a
+    # potentially competitive listing look deceptively attractive.
+    seller_count = _number(seller_match.group(1)) if seller_match else None
 
     return KaspiProduct(
         source_url=url,

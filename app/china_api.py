@@ -1,6 +1,6 @@
 """Plug-and-play provider architecture for fetching or searching China suppliers (1688, PDD, Taobao)."""
 from abc import ABC, abstractmethod
-from urllib.parse import quote
+import asyncio
 
 import httpx
 from pydantic import BaseModel, Field
@@ -9,11 +9,15 @@ from pydantic import BaseModel, Field
 from app.china import build_image_search_url, build_search_urls
 from app.config import get_settings
 from app.economics import calculate_target_cny_price
+from app.made_in_china import build_made_in_china_search_url, search_made_in_china
+from app.services import generate_global_search_keywords
 
 
 class ChinaSupplierItem(BaseModel):
     title: str
-    price_cny: float
+    price_cny: float | None = None
+    price_amount: float | None = None
+    price_currency: str = "CNY"
     moq: int = 1
     image_url: str | None = None
     detail_url: str
@@ -29,6 +33,7 @@ class ChinaSearchResult(BaseModel):
     image_search_url: str | None = None
     live_items: list[ChinaSupplierItem] = Field(default_factory=list)
     live_data_available: bool = False
+    source_status: str = "not_configured"
     data_note: str = ""
 
 
@@ -63,8 +68,9 @@ class LinkSearchProvider(ChinaDataProvider):
             keywords_chinese=keywords_zh,
             search_urls=search_urls,
             image_search_url=img_url,
-            live_items=[],
-            live_data_available=False,
+                live_items=[],
+                live_data_available=False,
+                source_status="not_configured",
             data_note=(
                 "Каталожные цены не получены: подключите официальный или лицензированный "
                 "провайдер данных, чтобы бот мог сравнивать реальные предложения."
@@ -119,6 +125,7 @@ class RapidAPI1688Provider(ChinaDataProvider):
 
         base_res.live_items = items
         base_res.live_data_available = bool(items)
+        base_res.source_status = "live" if items else "no_results"
         base_res.data_note = (
             "Реальные предложения получены от подключённого провайдера."
             if items else "Провайдер не вернул предложения для этого запроса."
@@ -133,7 +140,7 @@ from app.china_live import (
     build_live_pdd_search_url,
     build_live_taobao_search_url,
     fetch_1688_live_suggestions,
-    fetch_real_1688_live_items,
+    fetch_1688_live_search,
 )
 
 
@@ -149,8 +156,12 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
     ) -> ChinaSearchResult:
         target_cny = calculate_target_cny_price(sale_price_kzt) if sale_price_kzt else 0.0
 
-        # Query 1688's live suggestion API
-        suggestions = await fetch_1688_live_suggestions(keywords_zh)
+        # Both requests are independent; run them concurrently so a fallback
+        # response does not needlessly wait for two network timeouts.
+        suggestions, search_result = await asyncio.gather(
+            fetch_1688_live_suggestions(keywords_zh),
+            fetch_1688_live_search(keywords_zh, target_cny=target_cny if target_cny > 0 else None),
+        )
         active_kw = suggestions[0] if suggestions else keywords_zh
 
         url_1688_factory = build_live_1688_search_url(active_kw, max_price_cny=target_cny if target_cny > 0 else None, factory_only=True)
@@ -168,8 +179,11 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
             "alibaba": url_ali,
         }
 
-        # Attempt to fetch real items directly from 1688's live public search HTML
-        raw_real_items = await fetch_real_1688_live_items(active_kw, target_cny=target_cny if target_cny > 0 else None)
+        # Repeat only if 1688 suggested a different query; otherwise reuse the
+        # result above and avoid a duplicate request.
+        if active_kw != keywords_zh:
+            search_result = await fetch_1688_live_search(active_kw, target_cny=target_cny if target_cny > 0 else None)
+        raw_real_items = search_result.items
 
         live_items: list[ChinaSupplierItem] = []
         for r_item in raw_real_items:
@@ -187,7 +201,18 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
             data_note = "Реальные предложения поставщиков 1688 получены в режиме реального времени."
             available = True
         else:
-            data_note = "Автоматическая выгрузка списка ограничен фильтрами 1688. Используйте прямые поисковые ссылки ниже."
+            global_keywords = await generate_global_search_keywords(title_ru)
+            search_urls["made_in_china"] = build_made_in_china_search_url(global_keywords)
+            fallback_items, fallback_note = await search_made_in_china(global_keywords)
+            live_items = [ChinaSupplierItem(**item) for item in fallback_items]
+            if live_items:
+                available = True
+                data_note = "1688: " + search_result.detail + ". Результаты получены из публичной выдачи Made-in-China; цена указана в USD."
+            else:
+                data_note = (
+                    "1688: " + search_result.detail + ". Made-in-China: " + fallback_note + ". "
+                    "Используйте прямые поисковые ссылки ниже или подключите лицензированный провайдер каталожных данных."
+                )
             available = False
 
         return ChinaSearchResult(
@@ -197,6 +222,7 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
             image_search_url=img_url,
             live_items=live_items,
             live_data_available=available,
+            source_status="live_fallback" if live_items else search_result.status,
             data_note=data_note,
         )
 
@@ -206,6 +232,4 @@ def get_china_data_provider() -> ChinaDataProvider:
     if settings.china_provider_configured:
         return RapidAPI1688Provider(settings.china_provider_api_key or "", settings.china_provider_base_url or "")
     return SmartSourcingEngineProvider()
-
-
 

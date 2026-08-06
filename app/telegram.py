@@ -113,10 +113,15 @@ async def _send_china_ideas(chat_id: int, request: str) -> bool:
             rows = []
             offer_lines = []
             for offer in source_result.live_items[:5]:
-                offer_lines.append(
-                    f"• <b>{offer.price_cny:g} ¥</b> · MOQ {offer.moq} · {escape(offer.title[:70])}"
+                price = (
+                    f"{offer.price_cny:g} ¥" if offer.price_cny is not None
+                    else f"{offer.price_amount:g} {offer.price_currency}" if offer.price_amount is not None
+                    else "цена по запросу"
                 )
-                rows.append([{"text": f"{offer.platform} · {offer.price_cny:g} ¥", "url": offer.detail_url}])
+                offer_lines.append(
+                    f"• <b>{price}</b> · MOQ {offer.moq} · {escape(offer.title[:70])}"
+                )
+                rows.append([{"text": f"{offer.platform} · {price}", "url": offer.detail_url}])
             text += "\n\n<b>Реальные предложения поставщиков:</b>\n" + "\n".join(offer_lines)
             rows.append([{"text": "📦 Сопоставить с Kaspi", "callback_data": "check"}])
             markup = {"inline_keyboard": rows}
@@ -135,8 +140,8 @@ async def _send_niche_trends(chat_id: int) -> None:
     trends = await find_trending_sourcing_niches()
     await _send_message(
         chat_id,
-        f"<b>🔥 Трендовые Ниши и Товары из Китая для Kaspi</b>\n{escape(trends.summary_ru)}\n\n"
-        "Ниже 3 отобраные товарные ниши с высоким ROI и целевыми ценами закупки на 1688:",
+        f"<b>💡 Идеи товаров из Китая для Kaspi</b>\n{escape(trends.summary_ru)}\n\n"
+        "Ниже три гипотезы с целевыми ценами закупки. Перед закупкой проверьте выдачу, вес и спрос:",
     )
     for idx, opp in enumerate(trends.opportunities, start=1):
         text = (
@@ -144,8 +149,8 @@ async def _send_niche_trends(chat_id: int) -> None:
             f"<b>Категория:</b> {escape(opp.category_ru)}\n"
             f"<b>Продажа на Kaspi:</b> <b>{opp.suggested_sale_price_kzt:,.0f} ₸</b>\n"
             f"🎯 <b>Целевая закупка (1688):</b> до <b>{opp.target_purchase_cny} CNY</b> (~{int(opp.target_purchase_cny * 72):,} ₸)\n"
-            f"📈 <b>Ожидаемая маржа:</b> <b>{opp.estimated_margin_percent}%</b> (ROI: {opp.estimated_roi_percent}%)\n\n"
-            f"<b>Почему выгодно:</b> {escape(opp.why_promising)}\n"
+            f"📈 <b>Ориентир модели:</b> маржа {opp.estimated_margin_percent}% (ROI: {opp.estimated_roi_percent}%)\n\n"
+            f"<b>Почему проверить:</b> {escape(opp.why_promising)}\n"
             f"<b>Риск:</b> {escape(opp.risk_factor)}"
         )
         markup = {"inline_keyboard": [
@@ -159,7 +164,7 @@ async def register_commands() -> None:
     """Expose the stable navigation in Telegram's native menu beside the composer."""
     await _call("setMyCommands", {"commands": [
         {"command": "start", "description": "Начать работу"},
-        {"command": "trends", "description": "🔥 Трендовые Ниши 1688"},
+        {"command": "trends", "description": "💡 Идеи товаров 1688"},
         {"command": "ideas", "description": "Найти идеи товаров"},
         {"command": "check", "description": "Проверить товар Kaspi"},
         {"command": "china", "description": "Найти поставщика"},

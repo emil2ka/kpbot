@@ -12,9 +12,19 @@ def calculate_economics(data: EconomicsRequest) -> EconomicsResult:
     profit = data.sale_price_kzt - unit_cost - marketplace_fee - return_reserve - data.advertising_per_unit_kzt
     margin = profit / data.sale_price_kzt * 100
     roi = profit / unit_cost * 100 if unit_cost else 0
+    # Use the same assumptions as the displayed profit calculation.  The old
+    # shortcut used a fixed 30% margin and omitted fees and reserves.
     maximum_purchase = max(
         0,
-        (data.sale_price_kzt * 0.7 - cargo_per_unit - data.packaging_per_unit_kzt - data.customs_per_unit_kzt) / data.exchange_rate_cny_kzt,
+        (
+            data.sale_price_kzt * (1 - data.target_margin_percent / 100)
+            - marketplace_fee
+            - return_reserve
+            - data.advertising_per_unit_kzt
+            - cargo_per_unit
+            - data.packaging_per_unit_kzt
+            - data.customs_per_unit_kzt
+        ) / data.exchange_rate_cny_kzt,
     )
     if margin >= 35:
         recommendation = "Можно тестировать: запас по марже выглядит здоровым."

@@ -38,7 +38,12 @@ class Settings(BaseSettings):
 
     @property
     def china_live_data_configured(self) -> bool:
-        return True
+        """Whether a dependable catalogue-data provider is configured.
+
+        Generated marketplace links are useful, but they are not a reliable
+        live supplier feed. Keep the health check honest about that distinction.
+        """
+        return self.china_provider_configured
 
 
 

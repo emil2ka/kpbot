@@ -3,8 +3,17 @@
 Interacts with public 1688 search APIs and generates 100% valid, clickable, live
 supplier search links and photo search URLs.
 """
+from dataclasses import dataclass
+from html import unescape
 from urllib.parse import quote
 import httpx
+
+
+@dataclass
+class LiveSearchFetchResult:
+    items: list[dict]
+    status: str
+    detail: str
 
 
 async def fetch_1688_live_suggestions(keywords_zh: str) -> list[str]:
@@ -74,16 +83,44 @@ def build_live_alibaba_search_url(keywords_zh: str) -> str:
     return f"https://www.alibaba.com/trade/search?SearchText={encoded}"
 
 
-async def fetch_real_1688_live_items(keywords_zh: str, target_cny: float | None = None) -> list[dict]:
-    """Fetch real live product items directly from 1688's public search HTML without dummy fallbacks."""
-    import json
+def _extract_1688_items(html: str, target_cny: float | None = None) -> list[dict]:
+    """Extract only complete offer records exposed in a public page payload."""
     import re
+    items: list[dict] = []
+    seen_ids: set[str] = set()
+    for match in re.finditer(r'["\']offerId["\']\s*:\s*["\']?(\d+)["\']?', html):
+        offer_id = match.group(1)
+        if offer_id in seen_ids:
+            continue
+        chunk = html[match.start():match.start() + 2400]
+        next_offer = re.search(r'["\']offerId["\']\s*:', chunk[20:])
+        if next_offer:
+            chunk = chunk[:next_offer.start() + 20]
+        title_match = re.search(r'["\'](?:title|subject)["\']\s*:\s*["\'](.+?)["\']\s*[,}]', chunk, re.S)
+        price_match = re.search(r'["\'](?:price|priceInfo|offerPrice)["\']\s*:\s*["\']?(\d+(?:\.\d+)?)["\']?', chunk)
+        if not title_match or not price_match:
+            continue
+        price = float(price_match.group(1))
+        if target_cny and price > target_cny:
+            continue
+        title = unescape(title_match.group(1)).replace("\\u0026", "&").strip()
+        if not title:
+            continue
+        seen_ids.add(offer_id)
+        items.append({"title": title, "price_cny": price, "moq": 1,
+                      "detail_url": f"https://detail.1688.com/offer/{offer_id}.html", "platform": "1688"})
+        if len(items) == 5:
+            break
+    return items
+
+
+async def fetch_1688_live_search(keywords_zh: str, target_cny: float | None = None) -> LiveSearchFetchResult:
+    """Best-effort public search with a user-safe diagnostic on failure."""
     encoded = quote(keywords_zh.strip())
     url = f"https://s.1688.com/selloffer/offer_search.htm?keywords={encoded}"
     if target_cny and target_cny > 0:
         url += f"&priceFilter.endPrice={target_cny:.1f}"
 
-    items: list[dict] = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -91,26 +128,28 @@ async def fetch_real_1688_live_items(keywords_zh: str, target_cny: float | None 
     }
 
     try:
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=8.0) as client:
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=6.0) as client:
             resp = await client.get(url)
-            if resp.status_code == 200:
-                html = resp.text
-                offer_matches = re.findall(
-                    r'["\']offerId["\']\s*:\s*["\']?(\d+)["\']?.*?["\']title["\']\s*:\s*["\'](.*?)["\']?.*?["\']price["\']\s*:\s*["\']?(\d+(?:\.\d+)?)["\']?',
-                    html,
-                )
-                for offer_id, title, price in offer_matches[:5]:
-                    items.append({
-                        "title": title.strip(),
-                        "price_cny": float(price),
-                        "moq": 1,
-                        "detail_url": f"https://detail.1688.com/offer/{offer_id}.html",
-                        "platform": "1688",
-                    })
-    except Exception:
-        pass
+        if resp.status_code in {401, 403, 429}:
+            return LiveSearchFetchResult([], "blocked", f"1688 returned HTTP {resp.status_code}")
+        if resp.status_code != 200:
+            return LiveSearchFetchResult([], "unavailable", f"1688 returned HTTP {resp.status_code}")
+        page = resp.text
+        if any(marker in page.lower() for marker in ("captcha", "滑动验证", "访问验证", "login.taobao.com")):
+            return LiveSearchFetchResult([], "blocked", "1688 requested verification or sign-in")
+        items = _extract_1688_items(page, target_cny)
+        if items:
+            return LiveSearchFetchResult(items, "live", "Public 1688 page returned structured offers")
+        return LiveSearchFetchResult([], "no_results", "No structured offers were exposed by the public page")
+    except httpx.TimeoutException:
+        return LiveSearchFetchResult([], "unavailable", "1688 request timed out")
+    except httpx.HTTPError as exc:
+        return LiveSearchFetchResult([], "unavailable", f"1688 request failed: {exc.__class__.__name__}")
 
-    return items
+
+async def fetch_real_1688_live_items(keywords_zh: str, target_cny: float | None = None) -> list[dict]:
+    """Compatibility wrapper returning only verified items."""
+    return (await fetch_1688_live_search(keywords_zh, target_cny)).items
 
 
 def build_live_1688_image_search_url(image_url: str) -> str:
@@ -118,5 +157,4 @@ def build_live_1688_image_search_url(image_url: str) -> str:
     """Build a 100% valid working 1688 image search URL."""
     encoded = quote(image_url.strip())
     return f"https://s.1688.com/selloffer/image_search.htm?imageUrl={encoded}"
-
 
