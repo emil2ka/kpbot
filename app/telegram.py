@@ -119,13 +119,8 @@ async def _show_profile(chat_id: int) -> None:
 
 
 async def _start_idea_flow(chat_id: int) -> None:
-    session = _session(chat_id)
-    session["stage"] = "idea_budget"
-    await _send(chat_id, "<b>Найдём товар для теста.</b>\nКакой бюджет на первую закупку? Это помогает отсечь неподходящие идеи.", _keyboard([
-        [("до 50 000 ₸", "budget:50000"), ("50–150 тыс. ₸", "budget:150000")],
-        [("150–300 тыс. ₸", "budget:300000"), ("Не знаю", "budget:0")],
-        [("⬅️ В меню", "home")],
-    ]))
+    _session(chat_id)["context"] = {}
+    await _ask_category(chat_id)
 
 
 async def _ask_category(chat_id: int) -> None:
@@ -134,6 +129,22 @@ async def _ask_category(chat_id: int) -> None:
         [("🏠 Дом", "category:дом"), ("🚗 Авто", "category:авто")],
         [("✨ Красота", "category:красота"), ("🏃 Спорт", "category:спорт")],
         [("🤷 Не знаю", "category:любая")],
+    ]))
+
+
+async def _ask_product_type(chat_id: int) -> None:
+    _session(chat_id)["stage"] = "idea_type"
+    await _send(chat_id, "Какой тип товара интереснее? Это помогает не смешивать разные сценарии продаж.", _keyboard([
+        [("🧰 Практичный для дома", "type:utility"), ("🎁 Подарочный", "type:gift")],
+        [("🔁 Расходник / повторная покупка", "type:repeat"), ("📈 Не знаю", "type:any")],
+    ]))
+
+
+async def _ask_budget(chat_id: int) -> None:
+    _session(chat_id)["stage"] = "idea_budget"
+    await _send(chat_id, "Какой бюджет на тестовую закупку? Можно пропустить — тогда покажу варианты разного масштаба.", _keyboard([
+        [("до 50 000 ₸", "budget:50000"), ("50–150 тыс. ₸", "budget:150000")],
+        [("150–300 тыс. ₸", "budget:300000"), ("Пропустить", "budget:0")],
     ]))
 
 
@@ -150,6 +161,7 @@ async def _generate_ideas(chat_id: int) -> None:
     context = session["context"]
     request = (
         f"Подбери товары для категории: {context.get('category', 'любая')}. "
+        f"Тип товара: {context.get('product_type', 'любой')}. "
         f"Бюджет тестовой закупки: {profile.get('test_budget_kzt') or 'не задан'} KZT. "
         f"Исключить: {', '.join(profile.get('excluded_categories') or ['ничего'])}. "
         "Покажи только безопасные небрандовые гипотезы для ручной проверки."
@@ -313,7 +325,11 @@ async def _handle_text_stage(chat_id: int, incoming: str) -> bool:
         return True
     if stage == "idea_category":
         session["context"]["category"] = incoming[:80]
-        await _ask_exclusions(chat_id)
+        await _ask_product_type(chat_id)
+        return True
+    if stage == "idea_type":
+        session["context"]["product_type"] = incoming[:80]
+        await _ask_budget(chat_id)
         return True
     if stage == "idea_select":
         selected = _number(incoming)
@@ -404,9 +420,11 @@ async def handle_update(update: dict[str, Any]) -> None:
         elif callback == "compare": await _compare_current(chat_id)
         elif callback == "cargo": _session(chat_id)["stage"] = "cargo"; await _send(chat_id, "Напиши: <code>вес кг, длина, ширина, высота см, количество</code>.\nНапример: <code>12, 40, 30, 25, 50</code>")
         elif callback.startswith("budget:"):
-            _profile(chat_id)["test_budget_kzt"] = int(callback.split(":", 1)[1]); save_telegram_profile(chat_id, _profile(chat_id)); await _ask_category(chat_id)
+            _profile(chat_id)["test_budget_kzt"] = int(callback.split(":", 1)[1]) or None; save_telegram_profile(chat_id, _profile(chat_id)); await _ask_exclusions(chat_id)
         elif callback.startswith("category:"):
-            _session(chat_id)["context"]["category"] = callback.split(":", 1)[1]; await _ask_exclusions(chat_id)
+            _session(chat_id)["context"]["category"] = callback.split(":", 1)[1]; await _ask_product_type(chat_id)
+        elif callback.startswith("type:"):
+            _session(chat_id)["context"]["product_type"] = callback.split(":", 1)[1]; await _ask_budget(chat_id)
         elif callback.startswith("exclude:"):
             value = callback.split(":", 1)[1]; _profile(chat_id)["excluded_categories"] = [] if value == "none" else [value]; save_telegram_profile(chat_id, _profile(chat_id)); await _generate_ideas(chat_id)
         elif callback.startswith("idea:"): await _open_idea(chat_id, int(callback.split(":", 1)[1]))

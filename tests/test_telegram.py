@@ -42,8 +42,9 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
         )
         with patch("app.telegram._call", new=self.capture_call), patch("app.telegram.generate_china_ideas", new=AsyncMock(return_value=research)):
             await telegram.handle_update(callback_update(42, "find"))
-            await telegram.handle_update(callback_update(42, "budget:50000"))
             await telegram.handle_update(callback_update(42, "category:дом"))
+            await telegram.handle_update(callback_update(42, "type:utility"))
+            await telegram.handle_update(callback_update(42, "budget:50000"))
             await telegram.handle_update(callback_update(42, "exclude:none"))
             await telegram.handle_update(callback_update(42, "idea:0"))
         context = telegram._sessions[42]["context"]
