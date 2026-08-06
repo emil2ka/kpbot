@@ -74,3 +74,11 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
             await telegram.handle_update(message_update(42, "органайзеры"))
         self.assertTrue(any("Анализ Kaspi" in payload["text"] for payload in self.messages))
         self.assertTrue(any("Тест А" in payload["text"] for payload in self.messages))
+
+    async def test_idea_can_be_selected_by_number(self):
+        telegram._sessions[42] = {"stage": "idea_select", "profile": {}, "context": {}, "ideas": [
+            {"title_ru": "Органайзер", "chinese_keywords": "收纳盒", "why_interesting": "Компактный", "risk_to_check": "Материал"},
+        ]}
+        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram._run_market_scan", new=AsyncMock()):
+            await telegram.handle_update(message_update(42, "1"))
+        self.assertEqual(telegram._sessions[42]["context"]["idea"]["title_ru"], "Органайзер")

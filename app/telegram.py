@@ -160,8 +160,8 @@ async def _generate_ideas(chat_id: int) -> None:
         await _send(chat_id, "Не смог подготовить персональные гипотезы сейчас. Попробуй ещё раз чуть позже или пришли название категории.", _keyboard([[("🔄 Попробовать снова", "find"), ("⬅️ В меню", "home")]]))
         return
     session["ideas"] = [idea.model_dump() for idea in research.ideas]
-    session["stage"] = None
-    await _send(chat_id, f"<b>Идеи для проверки</b>\n{escape(research.interpretation)}\n\nЭто гипотезы, а не подтверждённые тренды. Выбери ту, которую хочешь развить:")
+    session["stage"] = "idea_select"
+    await _send(chat_id, f"<b>Что нашёл для проверки</b>\n{escape(research.interpretation)}\n\nВыбери номер или нажми кнопку. После выбора сам проверю выборку Kaspi, конкуренцию, ориентир закупки в Китае и следующий шаг:")
     for index, idea in enumerate(session["ideas"]):
         await _send(chat_id,
             f"<b>{index + 1}. {escape(idea['title_ru'])}</b>\n"
@@ -180,6 +180,9 @@ async def _open_idea(chat_id: int, index: int) -> None:
     local = {"title": idea["title_ru"], "status": "idea", "potential_score": None}
     _local_items.setdefault(chat_id, []).insert(0, local)
     session["context"] = {"idea": idea, "item_id": item_id}
+    session["stage"] = None
+    await _send(chat_id, "<b>Запускаю полный первичный анализ.</b> Сначала проверяю открытую выборку Kaspi, затем готовлю ориентир поиска и закупки в Китае.")
+    await _run_market_scan(chat_id, idea["title_ru"])
     urls = build_search_urls(idea["chinese_keywords"])
     await _send(chat_id,
         f"<b>Работаем с идеей: {escape(idea['title_ru'])}</b>\n"
@@ -311,6 +314,13 @@ async def _handle_text_stage(chat_id: int, incoming: str) -> bool:
     if stage == "idea_category":
         session["context"]["category"] = incoming[:80]
         await _ask_exclusions(chat_id)
+        return True
+    if stage == "idea_select":
+        selected = _number(incoming)
+        if selected is None or int(selected) not in range(1, len(session["ideas"]) + 1):
+            await _send(chat_id, "Напиши номер идеи: <code>1</code>, <code>2</code> или <code>3</code>; также можно нажать кнопку под вариантом.")
+            return True
+        await _open_idea(chat_id, int(selected) - 1)
         return True
     if stage == "profit_price":
         price = _number(incoming)
