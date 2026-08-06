@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from html import escape
 import re
+from statistics import median
 from typing import Any
 
 import httpx
@@ -78,6 +79,8 @@ async def _run_market_scan(chat_id: int, query: str) -> None:
     prices = [product.price_kzt for _, product in ranked if product.price_kzt]
     reviews = [product.review_count for _, product in ranked if product.review_count is not None]
     sellers = [product.seller_count for _, product in ranked if product.seller_count is not None]
+    median_price = int(median(prices)) if prices else None
+    median_sellers = median(sellers) if sellers else None
     summary = [f"<b>🧠 Анализ Kaspi: {escape(query)}</b>", f"Проверено карточек: <b>{len(ranked)}</b>"]
     if prices:
         summary.append(f"Диапазон цен: <b>{min(prices):,}–{max(prices):,} ₸</b>")
@@ -85,13 +88,22 @@ async def _run_market_scan(chat_id: int, query: str) -> None:
         summary.append(f"Отзывы в выборке: <b>{min(reviews)}–{max(reviews)}</b>")
     if sellers:
         summary.append(f"Продавцы в карточках: <b>{min(sellers)}–{max(sellers)}</b>")
+    if median_price:
+        summary.append(f"Медианная цена: <b>{median_price:,} ₸</b>")
+    competition = "умеренная" if median_sellers is not None and median_sellers <= 3 else "высокая" if median_sellers is not None and median_sellers >= 8 else "неопределённая"
+    summary.append(f"Конкуренция в выборке: <b>{competition}</b>")
     await _send(chat_id, "\n".join(summary) + "\n\nЭто выборка открытых карточек, не полный объём продаж Kaspi.")
     for index, (insight, product) in enumerate(ranked[:3], start=1):
         target = calculate_target_cny_price(product.price_kzt) if product.price_kzt else 0
+        price_position = "нет данных"
+        if median_price and product.price_kzt:
+            delta = round((product.price_kzt - median_price) / median_price * 100)
+            price_position = "ниже медианы" if delta < -5 else "выше медианы" if delta > 5 else "около медианы"
         await _send(chat_id,
             f"<b>{index}. {escape(product.title)}</b>\n"
             f"Оценка: <b>{insight.score}/100 · {insight.verdict}</b>\n"
             f"Цена: <b>{product.price_kzt:,.0f} ₸</b> · отзывы: {product.review_count or 'нет данных'} · продавцы: {product.seller_count or 'нет данных'}\n"
+            f"Позиция по цене: <b>{price_position}</b>\n"
             f"Ориентир закупки для маржи 35%: <b>до {target} ¥</b>\n"
             f"Риск: {escape((insight.concerns or ['Нужно проверить поставщика и характеристики товара.'])[0])}\nСледующий шаг: {escape(insight.next_step)}",
             {"inline_keyboard": [[{"text": "Открыть Kaspi", "url": str(product.source_url)}], [{"text": "🔗 Разобрать эту карточку", "callback_data": "check"}]]})
