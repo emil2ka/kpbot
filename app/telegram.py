@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.china import build_image_search_url, build_search_urls, detect_platform
+from app.china_api import get_china_data_provider
 from app.china_scraper import deep_extract_china_product
 from app.config import get_settings
 from app.database import (
@@ -18,6 +19,7 @@ from app.economics import calculate_economics, calculate_target_cny_price, compa
 from app.models import CargoQuoteRequest, EconomicsRequest
 from app.services import build_product_insight, generate_china_ideas, generate_chinese_keywords
 from app.kaspi import KaspiExtractionError, fetch_product, search_products
+from app.youtube_trends import fetch_youtube_trend_signal
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -194,7 +196,21 @@ async def _open_idea(chat_id: int, index: int) -> None:
     session["context"] = {"idea": idea, "item_id": item_id}
     session["stage"] = None
     await _send(chat_id, "<b>Запускаю полный первичный анализ.</b> Сначала проверяю открытую выборку Kaspi, затем готовлю ориентир поиска и закупки в Китае.")
+    await _send(chat_id, "<b>1/3 · Kaspi</b> Ищу открытые карточки, сравниваю цены, отзывы и число продавцов…")
     await _run_market_scan(chat_id, idea["title_ru"])
+    await _send(chat_id, "<b>2/3 · Тренд</b> Проверяю свежие публичные видео по товару в Казахстане…")
+    trend = await fetch_youtube_trend_signal(idea["title_ru"])
+    if trend.status == "live":
+        await _send(chat_id, f"Тренд-сигнал: за 30 дней найдено <b>{trend.video_count_30d}</b> видео, за 7 дней — <b>{trend.video_count_7d}</b>. Это сигнал интереса, не данные о продажах.")
+    else:
+        await _send(chat_id, "Тренд-сигнал сейчас недоступен — не буду выдумывать цифры. Продолжаю с Kaspi и Китаем.")
+    await _send(chat_id, "<b>3/3 · Китай</b> Ищу поставщиков и проверяю, есть ли реальные открытые предложения…")
+    china = await get_china_data_provider().search_suppliers(idea["title_ru"], idea["chinese_keywords"])
+    if china.live_items:
+        offers = "\n".join(f"• {item.price_cny or item.price_amount} {item.price_currency} · MOQ {item.moq}" for item in china.live_items[:3])
+        await _send(chat_id, "Нашёл реальные предложения поставщиков:\n" + offers)
+    else:
+        await _send(chat_id, "Реальные цены поставщиков не получены без подключённого провайдера. Ниже — точные поисковые ссылки; не буду подменять их выдуманными ценами.")
     urls = build_search_urls(idea["chinese_keywords"])
     await _send(chat_id,
         f"<b>Работаем с идеей: {escape(idea['title_ru'])}</b>\n"
