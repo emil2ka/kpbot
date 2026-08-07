@@ -255,26 +255,36 @@ def _get_fallback_ideas(request: str, count: int = 3) -> ChinaIdeaResearch:
         ChinaIdea(title_ru="Магнитный павербанк беспроводной", chinese_keywords="磁吸无线充电宝", why_interesting="Быстрый трендовый гаджет", risk_to_check="Реальная емкость батареи"),
         ChinaIdea(title_ru="Светодиодная кольцевая лампа для съемок", chinese_keywords="LED补光灯 桌面网红灯", why_interesting="Популярно у блогеров и контент-мейкеров", risk_to_check="Режимы свечения и устойчивость"),
     ]
+    phone_accessories_catalog = [
+        ChinaIdea(title_ru="Автомобильный магнитный держатель для телефона", chinese_keywords="车载磁吸手机支架", why_interesting="Массовый спрос у всех автовладельцев", risk_to_check="Сила магнита и зажима"),
+        ChinaIdea(title_ru="Беспроводная зарядная станция 3-в-1", chinese_keywords="三合一无线充电器 桌面", why_interesting="Высокий средний чек, трендовый гаджет", risk_to_check="Мощность зарядки и нагрев"),
+        ChinaIdea(title_ru="Магнитный кабель для быстрой зарядки Type-C", chinese_keywords="磁吸快充数据线", why_interesting="Дешевая закупка, высокая маржа", risk_to_check="Качество коннектора"),
+        ChinaIdea(title_ru="Универсальное защитное стекло для смартфона", chinese_keywords="手机全屏钢化膜", why_interesting="Высокая оборачиваемость, постоянная покупка", risk_to_check="Упаковка при транспортировке"),
+        ChinaIdea(title_ru="Водонепроницаемый чехол-сумка для смартфона", chinese_keywords="手机触屏防水袋", why_interesting="Сезонный летний хитовый товар", risk_to_check="Герметичность замка"),
+    ]
     general_catalog = [
         ChinaIdea(title_ru="Органайзер для кабелей и проводов", chinese_keywords="理线器桌面线缆收纳", why_interesting="Нужен каждому за рабочим столом", risk_to_check="Комплектация и клейкость"),
         ChinaIdea(title_ru="Чехол-сумка для гаджетов и зарядных устройств", chinese_keywords="数码配件便携收纳包", why_interesting="Отличный подарок и практичный аксессуар", risk_to_check="Качество молнии"),
         ChinaIdea(title_ru="Портативный ультразвуковой увлажнитель", chinese_keywords="便携式迷你加湿器", why_interesting="Компактный, стильный внешний вид", risk_to_check="Герметичность колбы"),
     ]
 
-    if any(k in req_lower for k in ("элек", "гаджет", "наушн", "часы", "заряд", "колон", "техник")):
-        pool = electronics_catalog + general_catalog
+    if any(k in req_lower for k in ("аксесуар", "аксессуар", "телефон", "смартфон", "чехол", "айфон")):
+        pool = phone_accessories_catalog + electronics_catalog
+        interpretation = "Определил категорию «Аксессуары для телефонов». Подобрал топовые маржинальные гаджеты."
+    elif any(k in req_lower for k in ("элек", "гаджет", "наушн", "часы", "заряд", "колон", "техник")):
+        pool = electronics_catalog + phone_accessories_catalog
         interpretation = "Определил категорию «Электроника и гаджеты». Подобрал ходовые маржинальные товары."
     elif any(k in req_lower for k in ("кухн", "посуд", "еда", "готовка")):
         pool = kitchen_catalog + home_catalog
         interpretation = "Определил категорию «Товары для кухни». Подобрал практичные компактные товары."
     elif any(k in req_lower for k in ("авто", "машин", "салон", "водитель")):
-        pool = auto_catalog + general_catalog
+        pool = auto_catalog + phone_accessories_catalog
         interpretation = "Определил категорию «Автотовары». Подобрал востребованные аксессуары для салона."
     elif any(k in req_lower for k in ("дом", "уют", "спальн", "комнат", "быт")):
         pool = home_catalog + kitchen_catalog
         interpretation = "Определил категорию «Товары для дома». Подобрал ходовые органайзеры и аксессуары."
     else:
-        pool = home_catalog + kitchen_catalog + auto_catalog + electronics_catalog + general_catalog
+        pool = phone_accessories_catalog + home_catalog + kitchen_catalog + auto_catalog + electronics_catalog
         interpretation = "Подобрал проверенные компактные товары для старта продаж."
 
     selected = pool[:num_ideas]

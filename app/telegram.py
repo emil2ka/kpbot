@@ -340,14 +340,8 @@ async def _run_market_scan(chat_id: int, query: str) -> None:
     await _send(chat_id, f"Ищу до 5 открытых карточек Kaspi по запросу <b>{escape(query)}</b> и считаю конкуренцию, цену и потенциал…")
     try:
         products = await search_products(query)
-    except KaspiExtractionError as exc:
-        if _is_discovery_request(query):
-            await _suggest_starting_product(chat_id, query)
-            return
-        await _send(chat_id,
-            f"По запросу <b>{escape(query)}</b> не нашёл открытых карточек Kaspi. "
-            "Пришли ссылку на похожий товар или опиши направление шире — например «что-то для дома»."
-        )
+    except KaspiExtractionError:
+        await _suggest_starting_product(chat_id, query)
         return
     ranked = sorted(((build_product_insight(product), product) for product in products), key=lambda pair: pair[0].score, reverse=True)
     target_margin = _profile(chat_id).get("target_margin_percent", 35)
