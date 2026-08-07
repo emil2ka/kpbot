@@ -32,6 +32,8 @@ _DISCOVERY_MARKERS = (
     "что-то", "что то", "не знаю", "подскажи", "посоветуй", "идею", "идеи",
     "что продавать",
 )
+_AFFIRMATIVE_REPLIES = {"да", "давай", "ок", "okay", "ok", "yes", "подходит", "берем", "берём"}
+_NEGATIVE_REPLIES = {"нет", "неа", "no", "другое", "другой", "покажи другое"}
 
 
 def _session(chat_id: int) -> dict[str, Any]:
@@ -100,15 +102,24 @@ async def _suggest_starting_product(chat_id: int, request: str) -> None:
     session = _session(chat_id)
     session["ideas"] = ideas
     session["context"] = {"idea": selected}
-    session["stage"] = None
+    session["stage"] = "suggested_idea_confirmation"
     await _send(chat_id,
         f"<b>Я бы начал с: {escape(selected['title_ru'])}</b>\n"
         f"Почему: {escape(selected['why_interesting'])}\n"
         f"Сначала проверить: {escape(selected['risk_to_check'])}\n\n"
         f"Китайский запрос: <code>{escape(selected['chinese_keywords'])}</code>\n\n"
-        "Это гипотеза, не обещание спроса. Пришли ссылку Kaspi — я сразу посчитаю конкуренцию и допустимую цену закупки. "
-        "Если направление не подходит, просто напиши по-своему, например: «для авто» или «не хрупкое»."
+        "Это гипотеза, не обещание спроса. Напиши «да» или нажми кнопку — начну проверку Kaspi. "
+        "Можно также написать другое направление, название товара или сразу прислать ссылку.",
+        _keyboard([[("✅ Да, проверить", "suggestion_accept"), ("🔄 Другое", "suggestion_other")]])
     )
+
+
+async def _handle_product_input(chat_id: int, incoming: str) -> None:
+    """Route a free-form reply without forcing the user back into a menu."""
+    if _is_discovery_request(incoming):
+        await _suggest_starting_product(chat_id, incoming)
+    else:
+        await _run_market_scan(chat_id, incoming)
 
 
 async def _run_market_scan(chat_id: int, query: str) -> None:
@@ -413,6 +424,20 @@ def _number(text: str) -> float | None:
 async def _handle_text_stage(chat_id: int, incoming: str) -> bool:
     session = _session(chat_id)
     stage = session.get("stage")
+    normalized = " ".join(incoming.lower().replace("ё", "е").split())
+    if stage == "suggested_idea_confirmation":
+        idea = session["context"].get("idea")
+        if normalized in _AFFIRMATIVE_REPLIES and idea:
+            session["stage"] = None
+            await _run_market_scan(chat_id, idea["title_ru"])
+            return True
+        if normalized in _NEGATIVE_REPLIES:
+            session["stage"] = "market_scan"
+            await _send(chat_id, "Хорошо. Напиши другое направление или название товара — можно совсем коротко, например <code>для авто</code>.")
+            return True
+        session["stage"] = None
+        await _handle_product_input(chat_id, incoming)
+        return True
     if stage == "idea_budget":
         value = _number(incoming)
         if value is None:
@@ -514,6 +539,16 @@ async def handle_update(update: dict[str, Any]) -> None:
     if callback:
         await _call("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
         if callback == "home": await _home(chat_id)
+        elif callback == "suggestion_accept":
+            idea = _session(chat_id)["context"].get("idea")
+            if idea:
+                _session(chat_id)["stage"] = None
+                await _run_market_scan(chat_id, idea["title_ru"])
+            else:
+                await _start_idea_flow(chat_id)
+        elif callback == "suggestion_other":
+            _session(chat_id)["stage"] = "market_scan"
+            await _send(chat_id, "Напиши другое направление или название товара — например <code>для авто</code> или <code>органайзер для кухни</code>.")
         elif callback == "profile_setup":
             await _show_profile(chat_id)
         elif callback == "find": await _start_idea_flow(chat_id)
@@ -575,17 +610,11 @@ async def handle_update(update: dict[str, Any]) -> None:
         return
     if detect_platform(incoming) != "Other": await _send_supplier(chat_id, incoming); return
     if _session(chat_id).get("stage") == "market_scan":
-        if _is_discovery_request(incoming):
-            await _suggest_starting_product(chat_id, incoming)
-        else:
-            await _run_market_scan(chat_id, incoming)
+        await _handle_product_input(chat_id, incoming)
         return
     if incoming and await _handle_text_stage(chat_id, incoming): return
     if incoming:
-        if _is_discovery_request(incoming):
-            await _suggest_starting_product(chat_id, incoming)
-        else:
-            await _run_market_scan(chat_id, incoming)
+        await _handle_product_input(chat_id, incoming)
         return
     await _home(chat_id)
 
