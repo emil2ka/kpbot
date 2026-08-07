@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from app.models import ChinaIdea, ChinaIdeaResearch, KaspiProduct
+from app.services import SourcingIntent
 from app import telegram
 
 
@@ -69,6 +70,24 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
         with patch("app.telegram._call", new=self.capture_call), patch("app.telegram._run_market_scan", new=AsyncMock()) as scan:
             await telegram.handle_update(message_update(42, "держатель для телефона"))
         scan.assert_awaited_once_with(42, "держатель для телефона")
+
+    async def test_trend_request_is_routed_to_trend_flow_not_kaspi_search(self):
+        with patch("app.telegram._call", new=self.capture_call), patch(
+            "app.telegram.classify_sourcing_request",
+            new=AsyncMock(return_value=SourcingIntent(kind="trend_discovery", query="проверь что в тренде")),
+        ), patch("app.telegram._handle_trend_request", new=AsyncMock()) as trend, patch("app.telegram._run_market_scan", new=AsyncMock()) as scan:
+            await telegram.handle_update(message_update(42, "ну проверь реально что в тренде потом предложи что-нибудь"))
+        trend.assert_awaited_once()
+        scan.assert_not_awaited()
+
+    async def test_yes_after_trend_hypothesis_starts_social_signal_check(self):
+        telegram._sessions[42] = {
+            "stage": "suggested_idea_confirmation", "profile": {}, "ideas": [],
+            "context": {"idea": {"title_ru": "Органайзер для ящиков"}, "trend_requested": True},
+        }
+        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram._run_trend_product_check", new=AsyncMock()) as trend_check:
+            await telegram.handle_update(message_update(42, "да"))
+        trend_check.assert_awaited_once_with(42, "Органайзер для ящиков")
 
     async def test_profile_margin_accepts_a_plain_number(self):
         telegram._sessions[42] = {"stage": "profile_margin", "profile": {"target_margin_percent": 35}, "ideas": [], "context": {}}

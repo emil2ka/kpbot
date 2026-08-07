@@ -18,7 +18,10 @@ from app.database import (
 )
 from app.economics import calculate_economics, calculate_target_cny_price, compare_cargo
 from app.models import CargoQuoteRequest, EconomicsRequest
-from app.services import build_product_insight, generate_china_ideas, generate_chinese_keywords
+from app.services import (
+    SourcingIntent, answer_sourcing_question, build_product_insight,
+    classify_sourcing_request, generate_china_ideas, generate_chinese_keywords,
+)
 from app.kaspi import KaspiExtractionError, fetch_product, search_products
 from app.youtube_trends import fetch_youtube_trend_signal
 
@@ -81,7 +84,7 @@ def _is_discovery_request(text: str) -> bool:
     )
 
 
-async def _suggest_starting_product(chat_id: int, request: str) -> None:
+async def _suggest_starting_product(chat_id: int, request: str, *, trend_requested: bool = False) -> None:
     """Turn a natural-language wish into one practical, low-friction next step."""
     profile = _profile(chat_id)
     await _send(chat_id, f"Понял: ищем <b>{escape(request)}</b>. Подбираю практичный вариант для первой проверки…")
@@ -101,7 +104,7 @@ async def _suggest_starting_product(chat_id: int, request: str) -> None:
     selected = ideas[0]
     session = _session(chat_id)
     session["ideas"] = ideas
-    session["context"] = {"idea": selected}
+    session["context"] = {"idea": selected, "trend_requested": trend_requested}
     session["stage"] = "suggested_idea_confirmation"
     await _send(chat_id,
         f"<b>Я бы начал с: {escape(selected['title_ru'])}</b>\n"
@@ -116,10 +119,50 @@ async def _suggest_starting_product(chat_id: int, request: str) -> None:
 
 async def _handle_product_input(chat_id: int, incoming: str) -> None:
     """Route a free-form reply without forcing the user back into a menu."""
-    if _is_discovery_request(incoming):
+    intent = await classify_sourcing_request(incoming)
+    if intent.kind == "trend_discovery":
+        await _handle_trend_request(chat_id, intent)
+    elif intent.kind == "idea_discovery":
         await _suggest_starting_product(chat_id, incoming)
+    elif intent.kind == "question":
+        answer = await answer_sourcing_question(incoming)
+        await _send(chat_id, answer or "Понял вопрос. Напиши название товара или пришли ссылку Kaspi — смогу дать предметный ответ по цене, конкуренции и закупке.")
     else:
-        await _run_market_scan(chat_id, incoming)
+        await _run_market_scan(chat_id, intent.query)
+
+
+async def _handle_trend_request(chat_id: int, intent: SourcingIntent) -> None:
+    """Acknowledge a trend request instead of pretending it is a product name."""
+    await _send(chat_id,
+        "Понял задачу: нужен не поиск по фразе, а вариант с проверкой публичных тренд-сигналов. "
+        "Продажи Kaspi публично не отдаёт, поэтому после подтверждения проверю открытые сигналы Kaspi, YouTube, TikTok и Telegram и честно покажу, чего не удалось подтвердить.")
+    await _suggest_starting_product(chat_id, intent.query, trend_requested=True)
+
+
+async def _run_trend_product_check(chat_id: int, title: str) -> None:
+    """Check public social signals for the chosen hypothesis before Kaspi analysis."""
+    import asyncio
+    from app.telegram_search import fetch_telegram_trend_signal
+    from app.tiktok import fetch_tiktok_trend_signal
+
+    await _send(chat_id, f"Проверяю публичные сигналы для <b>{escape(title)}</b>: YouTube, TikTok и Telegram…")
+    youtube, tiktok, telegram = await asyncio.gather(
+        fetch_youtube_trend_signal(title),
+        fetch_tiktok_trend_signal(title),
+        fetch_telegram_trend_signal(title),
+    )
+    evidence: list[str] = []
+    if youtube.status == "live":
+        evidence.append(f"YouTube: {youtube.video_count_7d} видео за 7 дней")
+    if tiktok.status == "live":
+        evidence.append(f"TikTok: {tiktok.video_count} видео, {tiktok.total_views:,} просмотров")
+    if telegram.status == "live":
+        evidence.append(f"Telegram: {telegram.post_count} упоминаний в {len(telegram.channels_found)} каналах")
+    if evidence:
+        await _send(chat_id, "<b>Публичные сигналы:</b>\n• " + "\n• ".join(evidence) + "\n\nДальше проверяю открытую выборку Kaspi.")
+    else:
+        await _send(chat_id, "Публичных сигналов недостаточно, чтобы назвать товар трендом. Проверяю Kaspi; это будет гипотеза, а не обещание спроса.")
+    await _run_market_scan(chat_id, title)
 
 
 async def _run_market_scan(chat_id: int, query: str) -> None:
@@ -429,7 +472,10 @@ async def _handle_text_stage(chat_id: int, incoming: str) -> bool:
         idea = session["context"].get("idea")
         if normalized in _AFFIRMATIVE_REPLIES and idea:
             session["stage"] = None
-            await _run_market_scan(chat_id, idea["title_ru"])
+            if session["context"].get("trend_requested"):
+                await _run_trend_product_check(chat_id, idea["title_ru"])
+            else:
+                await _run_market_scan(chat_id, idea["title_ru"])
             return True
         if normalized in _NEGATIVE_REPLIES:
             session["stage"] = "market_scan"
@@ -540,10 +586,14 @@ async def handle_update(update: dict[str, Any]) -> None:
         await _call("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
         if callback == "home": await _home(chat_id)
         elif callback == "suggestion_accept":
-            idea = _session(chat_id)["context"].get("idea")
+            context = _session(chat_id)["context"]
+            idea = context.get("idea")
             if idea:
                 _session(chat_id)["stage"] = None
-                await _run_market_scan(chat_id, idea["title_ru"])
+                if context.get("trend_requested"):
+                    await _run_trend_product_check(chat_id, idea["title_ru"])
+                else:
+                    await _run_market_scan(chat_id, idea["title_ru"])
             else:
                 await _start_idea_flow(chat_id)
         elif callback == "suggestion_other":

@@ -1,6 +1,8 @@
 import json
+from typing import Literal
 
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 
 from app.china import normalize_search_keywords
 from app.config import get_settings
@@ -9,6 +11,56 @@ from app.models import ChinaIdeaResearch, KaspiProduct, ProductInsight, RiskAsse
 
 class XAIServiceError(RuntimeError):
     """Raised when xAI cannot produce a usable structured assessment."""
+
+
+class SourcingIntent(BaseModel):
+    """A compact routing decision for a free-form Telegram message."""
+
+    kind: Literal["product_search", "idea_discovery", "trend_discovery", "question"]
+    query: str
+
+
+def _fallback_sourcing_intent(message: str) -> SourcingIntent:
+    normalized = message.lower()
+    if any(word in normalized for word in ("тренд", "в тренде", "что сейчас прода", "популярн")):
+        return SourcingIntent(kind="trend_discovery", query=message)
+    if any(word in normalized for word in ("что-то", "что то", "подскажи", "посоветуй", "идею")):
+        return SourcingIntent(kind="idea_discovery", query=message)
+    return SourcingIntent(kind="product_search", query=message)
+
+
+async def classify_sourcing_request(message: str) -> SourcingIntent:
+    """Understand the user's goal before choosing a sourcing workflow.
+
+    This keeps conversational requests such as "проверь, что в тренде" from
+    being sent verbatim to a Kaspi product search.
+    """
+    s = get_settings()
+    clean_message = " ".join(message.split())[:500]
+    if not s.xai_configured:
+        return _fallback_sourcing_intent(clean_message)
+    prompt = (
+        "Определи намерение пользователя для помощника по товарам Kaspi и закупкам из Китая. "
+        "Верни строго JSON: {\"kind\":\"product_search|idea_discovery|trend_discovery|question\",\"query\":\"...\"}. "
+        "product_search — пользователь назвал конкретный товар для поиска; "
+        "idea_discovery — просит подобрать товар или направление; "
+        "trend_discovery — просит сначала проверить, что сейчас в тренде/популярно, затем предложить товар; "
+        "question — общий вопрос, не требующий поиска карточек. "
+        "В query помести короткий поисковый запрос или исходную просьбу.\n\n"
+        f"Пользователь: {clean_message}"
+    )
+    try:
+        async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
+            response = await client.chat.completions.create(
+                model=s.xai_model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+        result = SourcingIntent.model_validate_json(response.choices[0].message.content or "{}")
+        return result.model_copy(update={"query": result.query.strip() or clean_message})
+    except Exception:
+        return _fallback_sourcing_intent(clean_message)
 
 
 def evaluate_hard_filters(product: KaspiProduct) -> tuple[bool, list[str]]:
