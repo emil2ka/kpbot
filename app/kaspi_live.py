@@ -43,15 +43,15 @@ async def search_kaspi_via_playwright(query: str, limit: int = 5) -> list[KaspiP
                 viewport={"width": 1280, "height": 800},
                 locale="ru-RU",
             )
+            await context.add_cookies([
+                {"name": "ks.city", "value": "750000000", "domain": ".kaspi.kz", "path": "/"}
+            ])
             page = await context.new_page()
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=6000)
             try:
-                await page.goto(search_url, wait_until="networkidle", timeout=15000)
+                await page.wait_for_selector(".item-card, a[href*='/shop/p/']", timeout=3000)
             except Exception:
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=10000)
-            try:
-                await page.wait_for_selector("a[href*='/shop/p/']", timeout=8000)
-            except Exception:
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(1500)
 
             raw_cards = await page.eval_on_selector_all(
                 ".item-card",
