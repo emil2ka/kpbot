@@ -225,16 +225,21 @@ async def fetch_product(url: str) -> KaspiProduct:
 
 
 async def search_products(query: str, *, limit: int = 5) -> list[KaspiProduct]:
-    """Find a small, public sample of Kaspi product pages and inspect each one.
-
-    Kaspi's search listing is rendered client-side, so we use a public web-search
-    result only to discover product URLs, then analyse the Kaspi pages directly.
-    This is intentionally bounded and never attempts to bypass Kaspi protections.
-    """
+    """Find live Kaspi.kz product cards via Playwright DOM rendering and HTTP search fallbacks."""
     cleaned = " ".join(query.split())[:120]
     if not cleaned:
         raise KaspiExtractionError("Напишите, какой товар или категорию искать")
 
+    # Strategy 1: Live Playwright Chromium DOM Search rendering
+    try:
+        from app.kaspi_live import search_kaspi_via_playwright
+        live_products = await search_kaspi_via_playwright(cleaned, limit=limit)
+        if live_products:
+            return live_products
+    except Exception:
+        pass
+
+    # Strategy 2: Multi-search engine URL discovery (DDG & Bing)
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "ru-RU,ru;q=0.9"}
     query_with_site = f"site:kaspi.kz/shop/p {cleaned}"
     try:
@@ -258,6 +263,10 @@ async def search_products(query: str, *, limit: int = 5) -> list[KaspiProduct]:
                 break
         if len(urls) >= limit:
             break
+
+    if not urls:
+        from app.kaspi_live import search_kaspi_via_httpx
+        urls = await search_kaspi_via_httpx(cleaned, limit=limit)
 
     if not urls:
         raise KaspiExtractionError("По этому запросу не нашёл открытых карточек Kaspi")
