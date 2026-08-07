@@ -837,7 +837,7 @@ async def handle_update(update: dict[str, Any]) -> None:
         return
     if detect_platform(incoming) != "Other": await _send_supplier(chat_id, incoming); return
     if _session(chat_id).get("stage") == "market_scan":
-        await _handle_product_input(chat_id, incoming)
+        await _run_market_scan(chat_id, incoming)
         return
     if incoming and await _handle_text_stage(chat_id, incoming): return
     if incoming:
