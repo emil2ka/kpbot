@@ -59,11 +59,11 @@ async def _send(chat_id: int, text: str, markup: dict[str, Any] | None = None) -
 
 async def _home(chat_id: int) -> None:
     _session(chat_id)["stage"] = None
-    intro = "Сначала настрой профиль — так идеи и расчёты будут точнее." if not _profile(chat_id).get("onboarded") else "Выбери рабочий сценарий."
-    await _send(chat_id, f"<b>Kaspi Sourcing AI</b>\n\n{intro}", _keyboard([
-        [("👤 Настроить профиль", "profile_setup"), ("💡 Придумать идею", "find")],
-        [("🔬 Разобрать свою идею", "own_idea"), ("📁 Мои идеи", "workspace")],
-        [("⚖️ Сравнить идеи", "compare_ideas"), ("✅ План действий", "action_plan")],
+    await _send(chat_id, "<b>Kaspi Sourcing AI</b>\n\n"
+        "Просто отправь ссылку Kaspi/1688 или напиши товар, например: <code>органайзер для кухни</code>. "
+        "Я сам начну проверку — выбирать сценарий и заполнять анкету не нужно.", _keyboard([
+        [("🔍 Найти товар", "find"), ("🔗 Проверить Kaspi", "check")],
+        [("📁 Мои идеи", "workspace"), ("⚙️ Мои настройки", "profile")],
     ]))
 
 
@@ -76,6 +76,7 @@ async def _run_market_scan(chat_id: int, query: str) -> None:
         await _send(chat_id, f"Не смог провести анализ: {escape(str(exc))}")
         return
     ranked = sorted(((build_product_insight(product), product) for product in products), key=lambda pair: pair[0].score, reverse=True)
+    target_margin = _profile(chat_id).get("target_margin_percent", 35)
     prices = [product.price_kzt for _, product in ranked if product.price_kzt]
     reviews = [product.review_count for _, product in ranked if product.review_count is not None]
     sellers = [product.seller_count for _, product in ranked if product.seller_count is not None]
@@ -94,7 +95,7 @@ async def _run_market_scan(chat_id: int, query: str) -> None:
     summary.append(f"Конкуренция в выборке: <b>{competition}</b>")
     await _send(chat_id, "\n".join(summary) + "\n\nЭто выборка открытых карточек, не полный объём продаж Kaspi.")
     for index, (insight, product) in enumerate(ranked[:3], start=1):
-        target = calculate_target_cny_price(product.price_kzt) if product.price_kzt else 0
+        target = calculate_target_cny_price(product.price_kzt, target_margin_percent=target_margin) if product.price_kzt else 0
         price_position = "нет данных"
         if median_price and product.price_kzt:
             delta = round((product.price_kzt - median_price) / median_price * 100)
@@ -104,7 +105,7 @@ async def _run_market_scan(chat_id: int, query: str) -> None:
             f"Оценка: <b>{insight.score}/100 · {insight.verdict}</b>\n"
             f"Цена: <b>{product.price_kzt:,.0f} ₸</b> · отзывы: {product.review_count or 'нет данных'} · продавцы: {product.seller_count or 'нет данных'}\n"
             f"Позиция по цене: <b>{price_position}</b>\n"
-            f"Ориентир закупки для маржи 35%: <b>до {target} ¥</b>\n"
+            f"Ориентир закупки для маржи {target_margin:g}%: <b>до {target} ¥</b>\n"
             f"Риск: {escape((insight.concerns or ['Нужно проверить поставщика и характеристики товара.'])[0])}\nСледующий шаг: {escape(insight.next_step)}",
             {"inline_keyboard": [[{"text": "Открыть Kaspi", "url": str(product.source_url)}], [{"text": "🔗 Разобрать эту карточку", "callback_data": "check"}]]})
     _session(chat_id)["stage"] = None
@@ -129,12 +130,14 @@ async def _show_profile(chat_id: int) -> None:
         f"Бюджет теста: {budget_text}\n"
         f"Целевая маржа: <b>{profile.get('target_margin_percent', 35)}%</b>\n"
         f"Исключить: {escape(excluded)}\n\nНастройки используются при подборе и расчётах.",
-        _keyboard([[("💳 Изменить бюджет", "profile_budget"), ("🎯 Маржа 35%", "profile_margin")], [("⬅️ В меню", "home")]]))
+        _keyboard([[("💳 Бюджет", "profile_budget"), ("🎯 Маржа", "profile_margin")], [("⬅️ В меню", "home")]]))
 
 
 async def _start_idea_flow(chat_id: int) -> None:
     _session(chat_id)["context"] = {}
-    await _ask_category(chat_id)
+    _session(chat_id)["stage"] = "market_scan"
+    await _send(chat_id, "Напиши товар обычными словами — например <code>контейнеры для еды</code>. "
+        "Ссылку Kaspi или поставщика тоже можно отправить сразу.")
 
 
 async def _ask_category(chat_id: int) -> None:
@@ -257,7 +260,8 @@ async def _send_kaspi_product(chat_id: int, product: Any) -> None:
     insight = build_product_insight(product)
     context = session["context"]
     context["kaspi"] = product
-    target = calculate_target_cny_price(product.price_kzt) if product.price_kzt else 0
+    target_margin = _profile(chat_id).get("target_margin_percent", 35)
+    target = calculate_target_cny_price(product.price_kzt, target_margin_percent=target_margin) if product.price_kzt else 0
     keywords = await generate_chinese_keywords(product.title)
     urls = build_search_urls(keywords, max_price_cny=target or None)
     image_search = build_image_search_url(str(product.image_url)) if product.image_url else None
@@ -270,7 +274,7 @@ async def _send_kaspi_product(chat_id: int, product: Any) -> None:
         f"Цена Kaspi: <b>{product.price_kzt:,.0f} ₸</b>\n" if product.price_kzt else f"<b>{title}</b>\n\nЦена Kaspi не прочитана.\n"
     ) + (
         f"Отзывы: {product.review_count or 'нет данных'} · Продавцы: {product.seller_count or 'нет данных'}\n"
-        f"Цель закупки для маржи 35%: <b>до {target} ¥</b>\n\n"
+        f"Цель закупки для маржи {target_margin:g}%: <b>до {target} ¥</b>\n\n"
         f"{escape(insight.summary)}\nСледующий шаг: {escape(insight.next_step)}"
     )
     rows: list[list[dict[str, str]]] = [[{"text": "🔎 Найти на 1688", "url": urls["1688"]}]]
@@ -422,6 +426,16 @@ async def _handle_text_stage(chat_id: int, incoming: str) -> bool:
         session["stage"] = None
         await _show_profile(chat_id)
         return True
+    if stage == "profile_margin":
+        value = _number(incoming)
+        if value is None or not 1 <= value <= 90:
+            await _send(chat_id, "Напиши желаемую маржу от 1 до 90%, например <code>35</code>.")
+            return True
+        _profile(chat_id)["target_margin_percent"] = value
+        save_telegram_profile(chat_id, _profile(chat_id))
+        session["stage"] = None
+        await _show_profile(chat_id)
+        return True
     return False
 
 
@@ -451,7 +465,7 @@ async def handle_update(update: dict[str, Any]) -> None:
         await _call("answerCallbackQuery", {"callback_query_id": update["callback_query"]["id"]})
         if callback == "home": await _home(chat_id)
         elif callback == "profile_setup":
-            _session(chat_id)["stage"] = "profile_goal"; await _send(chat_id, "Для чего ищем товар?", _keyboard([[('🚀 Быстрый тест', 'goal:test'), ('📦 Стабильные продажи', 'goal:stable')], [('💰 Высокая маржа', 'goal:margin')]]))
+            await _show_profile(chat_id)
         elif callback == "find": await _start_idea_flow(chat_id)
         elif callback == "check":
             _session(chat_id)["stage"] = "await_kaspi"; await _send(chat_id, "Пришли ссылку на товар Kaspi. Я покажу конкуренцию, ориентир закупки и следующий шаг.")
@@ -461,7 +475,7 @@ async def handle_update(update: dict[str, Any]) -> None:
             _session(chat_id)["stage"] = "await_supplier"; await _send(chat_id, "Пришли ссылку на 1688, Taobao, Alibaba, Pinduoduo или Tmall. Добавлю её к текущей идее.")
         elif callback == "workspace": await _show_workspace(chat_id)
         elif callback == "own_idea":
-            _session(chat_id)["stage"] = "own_idea"; await _send(chat_id, "Напиши идею своими словами или пришли ссылку Kaspi/1688. Я уточню детали и соберу карточку решения.")
+            await _start_idea_flow(chat_id)
         elif callback == "compare_ideas":
             items = list_sourcing_items(chat_id) or _local_items.get(chat_id, [])
             await _send(chat_id, "<b>⚖️ Сравнение идей</b>\n" + ("\n".join(f"• {escape(str(i['title']))}: {i.get('potential_score') or 'нет оценки'}/100" for i in items[:3]) if items else "Сначала сохрани хотя бы две идеи."))
@@ -471,7 +485,7 @@ async def handle_update(update: dict[str, Any]) -> None:
         elif callback == "profile": await _show_profile(chat_id)
         elif callback == "profile_budget": _session(chat_id)["stage"] = "profile_budget"; await _send(chat_id, "Напиши комфортный бюджет на тестовую закупку в тенге.")
         elif callback == "profile_margin":
-            profile = _profile(chat_id); profile["target_margin_percent"] = 35; save_telegram_profile(chat_id, profile); await _show_profile(chat_id)
+            _session(chat_id)["stage"] = "profile_margin"; await _send(chat_id, "Какую маржу хочешь получить? Напиши процент, например <code>35</code>.")
         elif callback == "profit": _session(chat_id)["stage"] = "profit_manual"; await _send(chat_id, "Напиши: <code>продажа KZT, цена CNY, количество, доставка KZT</code>.\nНапример: <code>8990, 18, 50, 60000</code>")
         elif callback == "compare": await _compare_current(chat_id)
         elif callback == "cargo": _session(chat_id)["stage"] = "cargo"; await _send(chat_id, "Напиши: <code>вес кг, длина, ширина, высота см, количество</code>.\nНапример: <code>12, 40, 30, 25, 50</code>")
@@ -513,12 +527,11 @@ async def handle_update(update: dict[str, Any]) -> None:
     if _session(chat_id).get("stage") == "market_scan":
         await _run_market_scan(chat_id, incoming)
         return
-    if _session(chat_id).get("stage") == "own_idea":
-        _session(chat_id)["context"] = {"own_idea": incoming}; _session(chat_id)["stage"] = None
-        await _send(chat_id, f"<b>🔬 Карточка идеи: {escape(incoming)}</b>\n\nПришли ссылку Kaspi для проверки конкуренции или ссылку 1688 для цены поставщика. Я сохраню контекст и продолжу анализ.", _keyboard([[('🧠 Анализ рынка Kaspi', 'market_scan'), ('💰 Рассчитать прибыль', 'profit')]]))
-        return
     if incoming and await _handle_text_stage(chat_id, incoming): return
-    await _send(chat_id, "Я могу помочь найти товар или проверить уже найденный. Выбери сценарий — так дам точный следующий шаг.", _keyboard([[("🔍 Найти товар", "find"), ("🔗 Проверить Kaspi", "check")], [("⬅️ В меню", "home")]]))
+    if incoming:
+        await _run_market_scan(chat_id, incoming)
+        return
+    await _home(chat_id)
 
 
 

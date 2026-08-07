@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.models import ChinaIdea, ChinaIdeaResearch, KaspiProduct
+from app.models import KaspiProduct
 from app import telegram
 
 
@@ -31,26 +31,22 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🔍 Найти товар", labels)
         self.assertIn("🔗 Проверить Kaspi", labels)
 
-    async def test_idea_wizard_keeps_selected_idea_as_context(self):
-        research = ChinaIdeaResearch(
-            interpretation="Подходит под компактную тестовую закупку.",
-            ideas=[
-                ChinaIdea(title_ru="Органайзер", chinese_keywords="抽屉 收纳盒", why_interesting="Компактный", risk_to_check="Пластик"),
-                ChinaIdea(title_ru="Крючок", chinese_keywords="挂钩", why_interesting="Лёгкий", risk_to_check="Клей"),
-                ChinaIdea(title_ru="Контейнер", chinese_keywords="收纳箱", why_interesting="Понятный", risk_to_check="Размер"),
-            ],
-        )
-        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram.generate_china_ideas", new=AsyncMock(return_value=research)):
+    async def test_plain_product_text_starts_market_analysis_without_menu_choice(self):
+        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram._run_market_scan", new=AsyncMock()) as scan:
+            await telegram.handle_update(message_update(42, "органайзер для кухни"))
+        scan.assert_awaited_once_with(42, "органайзер для кухни")
+
+    async def test_profile_margin_accepts_a_plain_number(self):
+        telegram._sessions[42] = {"stage": "profile_margin", "profile": {"target_margin_percent": 35}, "ideas": [], "context": {}}
+        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram.save_telegram_profile"):
+            await telegram.handle_update(message_update(42, "42"))
+        self.assertEqual(telegram._sessions[42]["profile"]["target_margin_percent"], 42)
+
+    async def test_find_asks_for_a_product_instead_of_running_a_profile_wizard(self):
+        with patch("app.telegram._call", new=self.capture_call):
             await telegram.handle_update(callback_update(42, "find"))
-            await telegram.handle_update(callback_update(42, "category:дом"))
-            await telegram.handle_update(callback_update(42, "type:utility"))
-            await telegram.handle_update(callback_update(42, "budget:50000"))
-            await telegram.handle_update(callback_update(42, "exclude:none"))
-            await telegram.handle_update(callback_update(42, "idea:0"))
-        context = telegram._sessions[42]["context"]
-        self.assertEqual(context["idea"]["title_ru"], "Органайзер")
-        self.assertEqual(telegram._sessions[42]["profile"]["test_budget_kzt"], 50000)
-        self.assertTrue(any("Работаем с идеей" in payload["text"] for payload in self.messages))
+        self.assertEqual(telegram._sessions[42]["stage"], "market_scan")
+        self.assertIn("Напиши товар", self.messages[-1]["text"])
 
     async def test_profit_text_is_calculated_not_sent_to_general_chat(self):
         telegram._sessions[42] = {"stage": "profit_manual", "profile": {}, "ideas": [], "context": {}}
@@ -80,6 +76,6 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
         telegram._sessions[42] = {"stage": "idea_select", "profile": {}, "context": {}, "ideas": [
             {"title_ru": "Органайзер", "chinese_keywords": "收纳盒", "why_interesting": "Компактный", "risk_to_check": "Материал"},
         ]}
-        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram._run_market_scan", new=AsyncMock()):
+        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram._open_idea", new=AsyncMock()) as open_idea:
             await telegram.handle_update(message_update(42, "1"))
-        self.assertEqual(telegram._sessions[42]["context"]["idea"]["title_ru"], "Органайзер")
+        open_idea.assert_awaited_once_with(42, 0)

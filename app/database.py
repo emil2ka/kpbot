@@ -140,6 +140,8 @@ def save_telegram_profile(telegram_id: int, profile: dict) -> bool:
             "test_budget_kzt": profile.get("test_budget_kzt"),
             "target_margin_percent": profile.get("target_margin_percent", 35),
             "excluded_categories": profile.get("excluded_categories", []),
+            "goal": profile.get("goal"),
+            "onboarded": profile.get("onboarded", False),
         }).execute()
         return True
     except Exception:
