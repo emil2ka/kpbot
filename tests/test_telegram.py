@@ -48,13 +48,12 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
             ],
         )
         product = KaspiProduct(source_url="https://kaspi.kz/shop/p/test-1/", title="Органайзер", price_kzt=8990, review_count=42, seller_count=2, rating=4.7)
-        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram.classify_sourcing_request", new=AsyncMock(return_value=SourcingIntent(kind="idea_discovery", query="что то для дома"))), patch("app.telegram.generate_china_ideas", new=AsyncMock(return_value=research)), patch("app.telegram.search_products", new=AsyncMock(return_value=[product])) as search, patch("app.telegram._send_supplier_leads", new=AsyncMock()) as supplier_leads:
+        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram.classify_sourcing_request", new=AsyncMock(return_value=SourcingIntent(kind="idea_discovery", query="что то для дома"))), patch("app.telegram.generate_china_ideas", new=AsyncMock(return_value=research)), patch("app.telegram.search_products", new=AsyncMock(return_value=[product])) as search:
             await telegram.handle_update(message_update(42, "что то для дома"))
         self.assertEqual(search.await_count, 3)
         self.assertEqual(telegram._sessions[42]["context"]["idea"]["title_ru"], "Органайзер для ящиков")
         self.assertIsNone(telegram._sessions[42]["stage"])
-        self.assertTrue(any("Рекомендация для первичной проверки" in message["text"] for message in self.messages))
-        supplier_leads.assert_awaited_once_with(42, telegram._sessions[42]["context"]["idea"], 8990)
+        self.assertTrue(any("🎯 Подобрал" in message["text"] for message in self.messages))
 
     async def test_yes_after_hypothesis_searches_the_suggested_product(self):
         telegram._sessions[42] = {
