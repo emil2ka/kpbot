@@ -224,55 +224,79 @@ async def fetch_product(url: str) -> KaspiProduct:
     )
 
 
+def _build_query_candidates(query: str) -> list[str]:
+    """Generate search query candidates from exact to simplified noun phrases."""
+    cleaned = " ".join(query.split())[:120]
+    candidates = [cleaned]
+    words = [w for w in cleaned.split() if len(w) > 2]
+    if len(words) > 2:
+        if words[0].lower().endswith(("ые", "ие", "ая", "ое", "ый", "ий")):
+            candidates.append(" ".join(words[1:]))
+        nouns = [w for w in words if not w.lower().endswith(("ые", "ие", "ая", "ое", "ый", "ий", "для"))]
+        if nouns:
+            candidates.append(" ".join(nouns))
+        candidates.append(" ".join(words[-2:]))
+    seen: set[str] = set()
+    result: list[str] = []
+    for c in candidates:
+        stripped = c.strip()
+        if stripped and stripped not in seen:
+            seen.add(stripped)
+            result.append(stripped)
+    return result
+
+
 async def search_products(query: str, *, limit: int = 5) -> list[KaspiProduct]:
-    """Find live Kaspi.kz product cards via Playwright DOM rendering and HTTP search fallbacks."""
+    """Find live Kaspi.kz product cards via Playwright DOM rendering and multi-engine fallbacks."""
     cleaned = " ".join(query.split())[:120]
     if not cleaned:
         raise KaspiExtractionError("Напишите, какой товар или категорию искать")
 
-    # Strategy 1: Live Playwright Chromium DOM Search rendering
-    try:
-        from app.kaspi_live import search_kaspi_via_playwright
-        live_products = await search_kaspi_via_playwright(cleaned, limit=limit)
-        if live_products:
-            return live_products
-    except Exception:
-        pass
+    candidates = _build_query_candidates(cleaned)
 
-    # Strategy 2: Multi-search engine URL discovery (DDG & Bing)
-    headers = {"User-Agent": USER_AGENT, "Accept-Language": "ru-RU,ru;q=0.9"}
-    query_with_site = f"site:kaspi.kz/shop/p {cleaned}"
-    try:
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=15.0) as client:
-            pages = await gather(
-                _fetch_ddg_results(client, query_with_site),
-                _fetch_bing_results(client, query_with_site),
-                return_exceptions=True,
-            )
-    except Exception as exc:
-        raise KaspiExtractionError("Не удалось найти открытые карточки Kaspi") from exc
+    for q in candidates:
+        # Strategy 1: Live Playwright Chromium DOM Search rendering
+        try:
+            from app.kaspi_live import search_kaspi_via_playwright
+            live_products = await search_kaspi_via_playwright(q, limit=limit)
+            if live_products:
+                return live_products
+        except Exception:
+            pass
 
-    urls: list[str] = []
-    for page in pages:
-        if isinstance(page, Exception):
-            continue
-        for url in _extract_kaspi_product_urls(page, limit):
-            if url not in urls:
-                urls.append(url)
+        # Strategy 2: Multi-search engine URL discovery (DDG & Bing)
+        headers = {"User-Agent": USER_AGENT, "Accept-Language": "ru-RU,ru;q=0.9"}
+        query_with_site = f"site:kaspi.kz/shop/p {q}"
+        try:
+            async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=12.0) as client:
+                pages = await gather(
+                    _fetch_ddg_results(client, query_with_site),
+                    _fetch_bing_results(client, query_with_site),
+                    return_exceptions=True,
+                )
+        except Exception:
+            pages = []
+
+        urls: list[str] = []
+        for page in pages:
+            if isinstance(page, Exception):
+                continue
+            for url in _extract_kaspi_product_urls(page, limit):
+                if url not in urls:
+                    urls.append(url)
+                if len(urls) >= limit:
+                    break
             if len(urls) >= limit:
                 break
-        if len(urls) >= limit:
-            break
 
-    if not urls:
-        from app.kaspi_live import search_kaspi_via_httpx
-        urls = await search_kaspi_via_httpx(cleaned, limit=limit)
+        if not urls:
+            from app.kaspi_live import search_kaspi_via_httpx
+            urls = await search_kaspi_via_httpx(q, limit=limit)
 
-    if not urls:
-        raise KaspiExtractionError("По этому запросу не нашёл открытых карточек Kaspi")
+        if urls:
+            results = await gather(*(fetch_product(url) for url in urls), return_exceptions=True)
+            products = [item for item in results if isinstance(item, KaspiProduct)]
+            if products:
+                return products
 
-    results = await gather(*(fetch_product(url) for url in urls), return_exceptions=True)
-    products = [item for item in results if isinstance(item, KaspiProduct)]
-    if not products:
-        raise KaspiExtractionError("Карточки найдены, но Kaspi не отдал данные для анализа")
-    return products
+    raise KaspiExtractionError("По этому запросу не нашёл открытых карточек Kaspi")

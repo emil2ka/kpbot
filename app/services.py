@@ -248,13 +248,23 @@ def _get_fallback_ideas(request: str, count: int = 3) -> ChinaIdeaResearch:
         ChinaIdea(title_ru="Подушка с эффектом памяти под шею в авто", chinese_keywords="汽车记忆棉头枕", why_interesting="Комфорт при долгой езде, хороший чек", risk_to_check="Плотность наполнителя"),
         ChinaIdea(title_ru="Мини-мусорка в салон автомобиля", chinese_keywords="车载便携小垃圾桶", why_interesting="Компактный аксессуар для чистоты", risk_to_check="Плотность крышки"),
     ]
+    electronics_catalog = [
+        ChinaIdea(title_ru="Беспроводные TWS наушники с футляром", chinese_keywords="蓝牙耳机 TWS 无线", why_interesting="Массовый постоянный спрос, высокий чек", risk_to_check="Качество аккумулятора и чипа"),
+        ChinaIdea(title_ru="Смарт-часы фитнес-браслет", chinese_keywords="智能手环 运动手表", why_interesting="Высокая маржинальность в ритейле", risk_to_check="Языковой софт приложения"),
+        ChinaIdea(title_ru="Портативная беспроводная bluetooth колонка", chinese_keywords="蓝牙音响 便携防水", why_interesting="Популярный подарок и аксессуар", risk_to_check="Качество динамика"),
+        ChinaIdea(title_ru="Магнитный павербанк беспроводной", chinese_keywords="磁吸无线充电宝", why_interesting="Быстрый трендовый гаджет", risk_to_check="Реальная емкость батареи"),
+        ChinaIdea(title_ru="Светодиодная кольцевая лампа для съемок", chinese_keywords="LED补光灯 桌面网红灯", why_interesting="Популярно у блогеров и контент-мейкеров", risk_to_check="Режимы свечения и устойчивость"),
+    ]
     general_catalog = [
         ChinaIdea(title_ru="Органайзер для кабелей и проводов", chinese_keywords="理线器桌面线缆收纳", why_interesting="Нужен каждому за рабочим столом", risk_to_check="Комплектация и клейкость"),
         ChinaIdea(title_ru="Чехол-сумка для гаджетов и зарядных устройств", chinese_keywords="数码配件便携收纳包", why_interesting="Отличный подарок и практичный аксессуар", risk_to_check="Качество молнии"),
         ChinaIdea(title_ru="Портативный ультразвуковой увлажнитель", chinese_keywords="便携式迷你加湿器", why_interesting="Компактный, стильный внешний вид", risk_to_check="Герметичность колбы"),
     ]
 
-    if any(k in req_lower for k in ("кухн", "посуд", "еда", "готовка")):
+    if any(k in req_lower for k in ("элек", "гаджет", "наушн", "часы", "заряд", "колон", "техник")):
+        pool = electronics_catalog + general_catalog
+        interpretation = "Определил категорию «Электроника и гаджеты». Подобрал ходовые маржинальные товары."
+    elif any(k in req_lower for k in ("кухн", "посуд", "еда", "готовка")):
         pool = kitchen_catalog + home_catalog
         interpretation = "Определил категорию «Товары для кухни». Подобрал практичные компактные товары."
     elif any(k in req_lower for k in ("авто", "машин", "салон", "водитель")):
@@ -264,7 +274,7 @@ def _get_fallback_ideas(request: str, count: int = 3) -> ChinaIdeaResearch:
         pool = home_catalog + kitchen_catalog
         interpretation = "Определил категорию «Товары для дома». Подобрал ходовые органайзеры и аксессуары."
     else:
-        pool = home_catalog + kitchen_catalog + auto_catalog + general_catalog
+        pool = home_catalog + kitchen_catalog + auto_catalog + electronics_catalog + general_catalog
         interpretation = "Подобрал проверенные компактные товары для старта продаж."
 
     selected = pool[:num_ideas]
