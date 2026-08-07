@@ -44,8 +44,14 @@ async def search_kaspi_via_playwright(query: str, limit: int = 5) -> list[KaspiP
                 locale="ru-RU",
             )
             page = await context.new_page()
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=12000)
-            await page.wait_for_timeout(2500)
+            try:
+                await page.goto(search_url, wait_until="networkidle", timeout=15000)
+            except Exception:
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=10000)
+            try:
+                await page.wait_for_selector("a[href*='/shop/p/']", timeout=8000)
+            except Exception:
+                await page.wait_for_timeout(2000)
 
             raw_cards = await page.eval_on_selector_all(
                 ".item-card",
