@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.models import KaspiProduct
+from app.models import ChinaIdea, ChinaIdeaResearch, KaspiProduct
 from app import telegram
 
 
@@ -35,6 +35,21 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
         with patch("app.telegram._call", new=self.capture_call), patch("app.telegram._run_market_scan", new=AsyncMock()) as scan:
             await telegram.handle_update(message_update(42, "органайзер для кухни"))
         scan.assert_awaited_once_with(42, "органайзер для кухни")
+
+    async def test_broad_request_gets_an_ai_hypothesis_instead_of_a_failed_kaspi_search(self):
+        research = ChinaIdeaResearch(
+            interpretation="Подходит для теста.",
+            ideas=[
+                ChinaIdea(title_ru="Органайзер для ящиков", chinese_keywords="抽屉收纳盒", why_interesting="Компактный", risk_to_check="Размер"),
+                ChinaIdea(title_ru="Крючки", chinese_keywords="挂钩", why_interesting="Лёгкие", risk_to_check="Клей"),
+                ChinaIdea(title_ru="Контейнеры", chinese_keywords="收纳盒", why_interesting="Понятные", risk_to_check="Материал"),
+            ],
+        )
+        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram.generate_china_ideas", new=AsyncMock(return_value=research)), patch("app.telegram.search_products", new=AsyncMock()) as search:
+            await telegram.handle_update(message_update(42, "что то для дома"))
+        search.assert_not_awaited()
+        self.assertEqual(telegram._sessions[42]["context"]["idea"]["title_ru"], "Органайзер для ящиков")
+        self.assertTrue(any("Я бы начал с" in message["text"] for message in self.messages))
 
     async def test_profile_margin_accepts_a_plain_number(self):
         telegram._sessions[42] = {"stage": "profile_margin", "profile": {"target_margin_percent": 35}, "ideas": [], "context": {}}

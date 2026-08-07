@@ -28,6 +28,10 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 # tiny cache holds only the unfinished dialog and lets local/demo deployments work.
 _sessions: dict[int, dict[str, Any]] = {}
 _local_items: dict[int, list[dict[str, Any]]] = {}
+_DISCOVERY_MARKERS = (
+    "что-то", "что то", "не знаю", "подскажи", "посоветуй", "идею", "идеи",
+    "что продавать",
+)
 
 
 def _session(chat_id: int) -> dict[str, Any]:
@@ -67,13 +71,59 @@ async def _home(chat_id: int) -> None:
     ]))
 
 
+def _is_discovery_request(text: str) -> bool:
+    """Distinguish a broad request for ideas from a concrete product query."""
+    normalized = " ".join(text.lower().replace("ё", "е").split())
+    return normalized in {"дом", "для дома", "кухня", "для кухни", "авто", "для авто", "подарок", "для подарка"} or any(
+        marker in normalized for marker in _DISCOVERY_MARKERS
+    )
+
+
+async def _suggest_starting_product(chat_id: int, request: str) -> None:
+    """Turn a natural-language wish into one practical, low-friction next step."""
+    profile = _profile(chat_id)
+    await _send(chat_id, f"Понял: ищем <b>{escape(request)}</b>. Подбираю практичный вариант для первой проверки…")
+    research = await generate_china_ideas(
+        f"Пользователь написал: {request}. Бюджет теста: {profile.get('test_budget_kzt') or 'не задан'} KZT. "
+        f"Целевая маржа: {profile.get('target_margin_percent', 35)}%. "
+        f"Исключить: {', '.join(profile.get('excluded_categories') or ['ничего'])}."
+    )
+    if not research:
+        await _send(chat_id,
+            "Понял направление, но не смог сейчас уточнить варианты. Напиши любой конкретный товар или пришли ссылку Kaspi — разберу его сразу.")
+        return
+
+    ideas = [idea.model_dump() for idea in research.ideas]
+    # Do not make a newcomer choose from a questionnaire. Keep alternatives in
+    # context, but propose the first safe hypothesis as the default next step.
+    selected = ideas[0]
+    session = _session(chat_id)
+    session["ideas"] = ideas
+    session["context"] = {"idea": selected}
+    session["stage"] = None
+    await _send(chat_id,
+        f"<b>Я бы начал с: {escape(selected['title_ru'])}</b>\n"
+        f"Почему: {escape(selected['why_interesting'])}\n"
+        f"Сначала проверить: {escape(selected['risk_to_check'])}\n\n"
+        f"Китайский запрос: <code>{escape(selected['chinese_keywords'])}</code>\n\n"
+        "Это гипотеза, не обещание спроса. Пришли ссылку Kaspi — я сразу посчитаю конкуренцию и допустимую цену закупки. "
+        "Если направление не подходит, просто напиши по-своему, например: «для авто» или «не хрупкое»."
+    )
+
+
 async def _run_market_scan(chat_id: int, query: str) -> None:
     """Search a bounded public sample and turn it into an evidence-based shortlist."""
     await _send(chat_id, f"Ищу до 5 открытых карточек Kaspi по запросу <b>{escape(query)}</b> и считаю конкуренцию, цену и потенциал…")
     try:
         products = await search_products(query)
     except KaspiExtractionError as exc:
-        await _send(chat_id, f"Не смог провести анализ: {escape(str(exc))}")
+        if _is_discovery_request(query):
+            await _suggest_starting_product(chat_id, query)
+            return
+        await _send(chat_id,
+            f"По запросу <b>{escape(query)}</b> не нашёл открытых карточек Kaspi. "
+            "Пришли ссылку на похожий товар или опиши направление шире — например «что-то для дома»."
+        )
         return
     ranked = sorted(((build_product_insight(product), product) for product in products), key=lambda pair: pair[0].score, reverse=True)
     target_margin = _profile(chat_id).get("target_margin_percent", 35)
@@ -525,11 +575,17 @@ async def handle_update(update: dict[str, Any]) -> None:
         return
     if detect_platform(incoming) != "Other": await _send_supplier(chat_id, incoming); return
     if _session(chat_id).get("stage") == "market_scan":
-        await _run_market_scan(chat_id, incoming)
+        if _is_discovery_request(incoming):
+            await _suggest_starting_product(chat_id, incoming)
+        else:
+            await _run_market_scan(chat_id, incoming)
         return
     if incoming and await _handle_text_stage(chat_id, incoming): return
     if incoming:
-        await _run_market_scan(chat_id, incoming)
+        if _is_discovery_request(incoming):
+            await _suggest_starting_product(chat_id, incoming)
+        else:
+            await _run_market_scan(chat_id, incoming)
         return
     await _home(chat_id)
 
