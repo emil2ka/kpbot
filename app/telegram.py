@@ -165,8 +165,10 @@ async def _suggest_starting_product(chat_id: int, request: str, count: int = 3, 
 
     session = _session(chat_id)
     session["ideas"] = ideas
+    if ideas:
+        session["context"]["idea"] = ideas[0]
     session["context"]["trend_requested"] = trend_requested
-    session["stage"] = "idea_select"
+    session["stage"] = None
 
     lines.append(
         "💡 <b>Изучи варианты выше!</b>\n"
