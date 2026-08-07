@@ -118,69 +118,114 @@ async def _collect_market_evidence(idea: dict[str, Any]) -> MarketEvidence:
     return MarketEvidence(idea=idea, products=products, score=round(sum(insights) / len(insights)) if insights else 0)
 
 
-async def _suggest_starting_product(chat_id: int, request: str, *, trend_requested: bool = False) -> None:
-    """Research several hypotheses before recommending one, rather than guessing."""
+async def _suggest_starting_product(chat_id: int, request: str, count: int = 3, *, trend_requested: bool = False) -> None:
+    """Research up to 10 hypotheses and present a numbered chat shortlist for interactive selection."""
     profile = _profile(chat_id)
+    num_ideas = max(1, min(10, count))
     await _send(chat_id,
-        f"Понял: ищем <b>{escape(request)}</b>. Сначала подберу 3 гипотезы и проверю по каждой открытую выборку Kaspi — без этого ничего рекомендовать не буду.")
+        f"Понял задачу: подберу <b>{num_ideas}</b> вариантов товаров по запросу «<b>{escape(request)}</b>» "
+        "и сразу проверю открытую выборку Kaspi без придумывания цифр…")
+
     research = await generate_china_ideas(
         f"Пользователь написал: {request}. Бюджет теста: {profile.get('test_budget_kzt') or 'не задан'} KZT. "
         f"Целевая маржа: {profile.get('target_margin_percent', 35)}%. "
-        f"Исключить: {', '.join(profile.get('excluded_categories') or ['ничего'])}."
+        f"Исключить: {', '.join(profile.get('excluded_categories') or ['ничего'])}.",
+        count=num_ideas,
     )
-    if not research:
+    if not research or not research.ideas:
         await _send(chat_id,
-            "Понял направление, но не смог сейчас уточнить варианты. Напиши любой конкретный товар или пришли ссылку Kaspi — разберу его сразу.")
+            "Понял направление, но не смог сейчас подгрузить варианты. Напиши любой конкретный товар или пришли ссылку Kaspi — разберу его сразу.")
         return
 
     ideas = [idea.model_dump() for idea in research.ideas]
     evidence = await asyncio.gather(*(_collect_market_evidence(idea) for idea in ideas))
-    verified = [item for item in evidence if item.products]
-    if not verified:
-        await _send(chat_id,
-            "Не смог получить ни одной открытой карточки Kaspi для этих гипотез, поэтому не буду придумывать «трендовый товар». "
-            "Сейчас можно прислать любую ссылку Kaspi для точного разбора; для стабильного поиска по категориям нужен подключённый разрешённый поставщик рыночных данных.")
-        return
 
-    selected_evidence = max(verified, key=lambda item: item.score)
-    selected = selected_evidence.idea
+    lines: list[str] = [f"<b>🎯 Подобрал {len(ideas)} предложений для вашего бизнеса:</b>\n"]
+    buttons: list[list[dict[str, str]]] = []
+    current_row: list[dict[str, str]] = []
+
+    for idx, (idea, ev) in enumerate(zip(ideas, evidence), start=1):
+        price_str = ""
+        if ev.products:
+            prices = ev.prices
+            price_str = f" · Kaspi: <b>{min(prices):,}–{max(prices):,} ₸</b>" if prices else ""
+
+        lines.append(
+            f"<b>{idx}. {escape(idea['title_ru'])}</b>{price_str}\n"
+            f"   <i>💡 {escape(idea['why_interesting'])}</i>\n"
+            f"   <i>⚠️ Риск: {escape(idea['risk_to_check'])}</i>\n"
+        )
+        current_row.append({"text": f"№{idx} {escape(idea['title_ru'][:14])}", "callback_data": f"idea:{idx - 1}"})
+        if len(current_row) == 2:
+            buttons.append(current_row)
+            current_row = []
+
+    if current_row:
+        buttons.append(current_row)
+
     session = _session(chat_id)
     session["ideas"] = ideas
-    session["context"] = {"idea": selected, "trend_requested": trend_requested}
-    session["stage"] = None
-    prices = selected_evidence.prices
-    reviews = selected_evidence.reviews
-    sellers = selected_evidence.sellers
-    median_price = int(median(prices)) if prices else None
-    target = calculate_target_cny_price(
-        median_price, target_margin_percent=profile.get("target_margin_percent", 35)
-    ) if median_price else None
-    evidence_lines = [
-        f"Проверено карточек Kaspi: <b>{len(selected_evidence.products)}</b>",
-        f"Оценка открытой выборки: <b>{selected_evidence.score}/100</b>",
-    ]
-    if prices:
-        evidence_lines.append(f"Цена в выборке: <b>{min(prices):,}–{max(prices):,} ₸</b>")
-    if reviews:
-        evidence_lines.append(f"Отзывы: <b>{min(reviews)}–{max(reviews)}</b>")
-    if sellers:
-        evidence_lines.append(f"Продавцы: <b>{min(sellers)}–{max(sellers)}</b>")
-    await _send(chat_id,
-        f"<b>Рекомендация для первичной проверки: {escape(selected['title_ru'])}</b>\n"
-        f"Почему: {escape(selected['why_interesting'])}\n"
-        f"Риск: {escape(selected['risk_to_check'])}\n\n"
-        + "\n".join(evidence_lines)
-        + (f"\nОриентир закупки для маржи {profile.get('target_margin_percent', 35):g}%: <b>до {target} ¥</b>" if target is not None else "")
-        + f"\n\nКитайский запрос: <code>{escape(selected['chinese_keywords'])}</code>\n"
-        "Это анализ открытой выборки, не данные о продажах Kaspi. Следующий шаг: пришли ссылку на поставщика — сравню цену, MOQ и экономику.",
-        _url_keyboard([[
-            {"text": "Открыть карточку Kaspi", "url": str(selected_evidence.products[0].source_url)},
-            {"text": "Искать на 1688", "url": build_search_urls(selected["chinese_keywords"], max_price_cny=target)["1688"]},
-        ]])
+    session["context"]["trend_requested"] = trend_requested
+    session["stage"] = "idea_select"
+
+    lines.append(
+        "💡 <b>Изучи варианты выше!</b>\n"
+        f"Напиши номер (от <code>1</code> до <code>{len(ideas)}</code>) или нажми кнопку ниже — я детально разберу выбранный товар (Kaspi, закупка в Китае, 1688, юнит-экономика)."
     )
-    if trend_requested:
-        await _send_public_trend_signals(chat_id, selected["title_ru"])
-    await _send_supplier_leads(chat_id, selected, median_price)
+
+    await _send(chat_id, "\n".join(lines), _url_keyboard(buttons))
+
+
+async def _open_idea(chat_id: int, index: int) -> None:
+    """Open a specific proposal from the shortlist and run full Kaspi, China, and economics analysis."""
+    session = _session(chat_id)
+    ideas = session.get("ideas") or []
+    if not ideas or index < 0 or index >= len(ideas):
+        await _send(chat_id, "Выбранный товар не найден. Начни с подбора товара заново.", _keyboard([[("🔍 Найти товар", "find")]]))
+        return
+
+    idea = ideas[index]
+    title = idea["title_ru"]
+    profile = _profile(chat_id)
+    await _send(chat_id, f"<b>🔍 Разбираю товар №{index + 1}: {escape(title)}</b>\nАнализирую открытые карточки Kaspi, живые цены в Китае и считаем экономику…")
+
+    if session.get("context", {}).get("trend_requested"):
+        await _send_public_trend_signals(chat_id, title)
+
+    try:
+        products = await search_products(title)
+    except KaspiExtractionError:
+        products = []
+
+    prices = [p.price_kzt for p in products if p.price_kzt]
+    reviews = [p.review_count for p in products if p.review_count is not None]
+    sellers = [p.seller_count for p in products if p.seller_count is not None]
+    median_price = int(median(prices)) if prices else None
+    target = calculate_target_cny_price(median_price, target_margin_percent=profile.get("target_margin_percent", 35)) if median_price else None
+
+    summary_lines = [
+        f"<b>🧠 Карточка товара: {escape(title)}</b>",
+        f"<i>{escape(idea.get('why_interesting', 'Перспективная гипотеза'))}</i>",
+        f"<i>⚠️ Риск: {escape(idea.get('risk_to_check', 'Проверить перед закупкой'))}</i>\n",
+    ]
+    if products:
+        summary_lines.append(f"Проверено карточек Kaspi: <b>{len(products)}</b>")
+        if prices: summary_lines.append(f"Цены Kaspi: <b>{min(prices):,}–{max(prices):,} ₸</b> (Медиана: <b>{median_price:,} ₸</b>)")
+        if reviews: summary_lines.append(f"Отзывы: <b>{min(reviews)}–{max(reviews)}</b>")
+        if sellers: summary_lines.append(f"Продавцы: <b>{min(sellers)}–{max(sellers)}</b>")
+    if target:
+        summary_lines.append(f"Ориентир закупки для маржи {profile.get('target_margin_percent', 35):g}%: <b>до {target} ¥</b>")
+
+    search_urls = build_search_urls(idea["chinese_keywords"], max_price_cny=target)
+    buttons = [
+        [{"text": "1688 Заводы", "url": search_urls["1688"]}, {"text": "Taobao", "url": search_urls["taobao"]}],
+        [{"text": "Pinduoduo", "url": search_urls["pinduoduo"]}, {"text": "Alibaba", "url": search_urls["alibaba"]}],
+    ]
+    if products and products[0].source_url:
+        buttons.insert(0, [{"text": "Открыть на Kaspi.kz", "url": str(products[0].source_url)}])
+
+    await _send(chat_id, "\n".join(summary_lines), _url_keyboard(buttons))
+    await _send_supplier_leads(chat_id, idea, median_price)
 
 
 async def _send_supplier_leads(chat_id: int, idea: dict[str, Any], sale_price_kzt: int | None) -> None:
@@ -220,13 +265,29 @@ async def _send_supplier_leads(chat_id: int, idea: dict[str, Any], sale_price_kz
     )
 
 
+async def _start_idea_flow(chat_id: int) -> None:
+    _session(chat_id)["stage"] = "idea_query"
+    await _send(chat_id,
+        "<b>🔍 Подбор товаров для бизнеса</b>\n\n"
+        "Сколько вариантов (гипотез) подобрать для изучения?\n"
+        "Выбери кнопку или напиши направление (например: <code>5 товаров для кухни</code> или <code>10 вариантов</code>):",
+        _keyboard([
+            [("3 товара", "ideas_count:3"), ("5 товаров", "ideas_count:5"), ("10 товаров", "ideas_count:10")],
+            [("⬅️ В меню", "home")],
+        ])
+    )
+
+
 async def _handle_product_input(chat_id: int, incoming: str) -> None:
-    """Route a free-form reply without forcing the user back into a menu."""
+    """Route a free-form reply and detect if user asked for a specific count of ideas (up to 10)."""
+    match_count = re.search(r"(\d+)\s*(?:шт|товара?|варианта?|предложений?|гипотез|идей)?", incoming.lower())
+    count = int(match_count.group(1)) if match_count and 1 <= int(match_count.group(1)) <= 10 else 3
+
     intent = await classify_sourcing_request(incoming)
     if intent.kind == "trend_discovery":
         await _handle_trend_request(chat_id, intent)
     elif intent.kind == "idea_discovery":
-        await _suggest_starting_product(chat_id, incoming)
+        await _suggest_starting_product(chat_id, incoming, count=count)
     elif intent.kind == "question":
         answer = await answer_sourcing_question(incoming)
         await _send(chat_id, answer or "Понял вопрос. Напиши название товара или пришли ссылку Kaspi — смогу дать предметный ответ по цене, конкуренции и закупке.")
@@ -765,6 +826,9 @@ async def handle_update(update: dict[str, Any]) -> None:
             _session(chat_id)["context"]["product_type"] = callback.split(":", 1)[1]; await _ask_budget(chat_id)
         elif callback.startswith("exclude:"):
             value = callback.split(":", 1)[1]; _profile(chat_id)["excluded_categories"] = [] if value == "none" else [value]; save_telegram_profile(chat_id, _profile(chat_id)); await _generate_ideas(chat_id)
+        elif callback.startswith("ideas_count:"):
+            count = int(callback.split(":", 1)[1])
+            await _suggest_starting_product(chat_id, "перспективные товары для перепродажи", count=count)
         elif callback.startswith("idea:"): await _open_idea(chat_id, int(callback.split(":", 1)[1]))
         return
     if command in {"/start", "/menu", "/help"}: await _home(chat_id); return

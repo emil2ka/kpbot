@@ -161,7 +161,7 @@ class ChinaIdea(BaseModel):
 
 class ChinaIdeaResearch(BaseModel):
     interpretation: str
-    ideas: list[ChinaIdea] = Field(min_length=3, max_length=3)
+    ideas: list[ChinaIdea] = Field(min_length=1, max_length=10)
 
 
 class SupplierComparisonRequest(BaseModel):

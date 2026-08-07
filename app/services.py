@@ -222,13 +222,14 @@ async def generate_global_search_keywords(title_ru: str) -> str:
         return title_ru
 
 
-async def generate_china_ideas(request: str) -> ChinaIdeaResearch | None:
-    """Generate sourcing hypotheses and searchable Chinese queries, never fake market metrics."""
+async def generate_china_ideas(request: str, count: int = 3) -> ChinaIdeaResearch | None:
+    """Generate sourcing hypotheses and searchable Chinese queries (from 1 to 10 ideas)."""
     s = get_settings()
     if not s.xai_configured:
         return None
+    num_ideas = max(1, min(10, count))
     prompt = (
-        "Ты исследователь товаров для перепродажи в Казахстане. Сформируй ровно 3 гипотезы "
+        f"Ты исследователь товаров для перепродажи в Казахстане. Сформируй ровно {num_ideas} гипотез "
         "товара для поиска у китайских поставщиков. Пользователь может назвать категорию, бюджет, "
         "целевую маржу или попросить подумать самостоятельно. Выбирай небрандовые, компактные, "
         "неопасные товары; исключай лекарства, БАДы, детские товары, электронику с батареями и явные бренды. "
