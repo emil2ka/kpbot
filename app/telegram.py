@@ -1,7 +1,10 @@
 """Conversation-first Telegram interface for the sourcing workspace."""
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from html import escape
+import logging
 import re
 from statistics import median
 from typing import Any
@@ -26,6 +29,7 @@ from app.kaspi import KaspiExtractionError, fetch_product, search_products
 from app.youtube_trends import fetch_youtube_trend_signal
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
+logger = logging.getLogger(__name__)
 
 # A live conversation must have context. Supabase persists workspace data; this
 # tiny cache holds only the unfinished dialog and lets local/demo deployments work.
@@ -37,6 +41,26 @@ _DISCOVERY_MARKERS = (
 )
 _AFFIRMATIVE_REPLIES = {"да", "давай", "ок", "okay", "ok", "yes", "подходит", "берем", "берём"}
 _NEGATIVE_REPLIES = {"нет", "неа", "no", "другое", "другой", "покажи другое"}
+_processed_updates: set[int] = set()
+
+
+@dataclass
+class MarketEvidence:
+    idea: dict[str, Any]
+    products: list[Any]
+    score: int
+
+    @property
+    def prices(self) -> list[int]:
+        return [product.price_kzt for product in self.products if product.price_kzt is not None]
+
+    @property
+    def reviews(self) -> list[int]:
+        return [product.review_count for product in self.products if product.review_count is not None]
+
+    @property
+    def sellers(self) -> list[int]:
+        return [product.seller_count for product in self.products if product.seller_count is not None]
 
 
 def _session(chat_id: int) -> dict[str, Any]:
@@ -84,10 +108,21 @@ def _is_discovery_request(text: str) -> bool:
     )
 
 
+async def _collect_market_evidence(idea: dict[str, Any]) -> MarketEvidence:
+    """Collect a small public Kaspi sample for one AI-generated hypothesis."""
+    try:
+        products = await search_products(idea["title_ru"], limit=3)
+    except KaspiExtractionError:
+        return MarketEvidence(idea=idea, products=[], score=0)
+    insights = [build_product_insight(product).score for product in products]
+    return MarketEvidence(idea=idea, products=products, score=round(sum(insights) / len(insights)) if insights else 0)
+
+
 async def _suggest_starting_product(chat_id: int, request: str, *, trend_requested: bool = False) -> None:
-    """Turn a natural-language wish into one practical, low-friction next step."""
+    """Research several hypotheses before recommending one, rather than guessing."""
     profile = _profile(chat_id)
-    await _send(chat_id, f"Понял: ищем <b>{escape(request)}</b>. Подбираю практичный вариант для первой проверки…")
+    await _send(chat_id,
+        f"Понял: ищем <b>{escape(request)}</b>. Сначала подберу 3 гипотезы и проверю по каждой открытую выборку Kaspi — без этого ничего рекомендовать не буду.")
     research = await generate_china_ideas(
         f"Пользователь написал: {request}. Бюджет теста: {profile.get('test_budget_kzt') or 'не задан'} KZT. "
         f"Целевая маржа: {profile.get('target_margin_percent', 35)}%. "
@@ -99,21 +134,89 @@ async def _suggest_starting_product(chat_id: int, request: str, *, trend_request
         return
 
     ideas = [idea.model_dump() for idea in research.ideas]
-    # Do not make a newcomer choose from a questionnaire. Keep alternatives in
-    # context, but propose the first safe hypothesis as the default next step.
-    selected = ideas[0]
+    evidence = await asyncio.gather(*(_collect_market_evidence(idea) for idea in ideas))
+    verified = [item for item in evidence if item.products]
+    if not verified:
+        await _send(chat_id,
+            "Не смог получить ни одной открытой карточки Kaspi для этих гипотез, поэтому не буду придумывать «трендовый товар». "
+            "Сейчас можно прислать любую ссылку Kaspi для точного разбора; для стабильного поиска по категориям нужен подключённый разрешённый поставщик рыночных данных.")
+        return
+
+    selected_evidence = max(verified, key=lambda item: item.score)
+    selected = selected_evidence.idea
     session = _session(chat_id)
     session["ideas"] = ideas
     session["context"] = {"idea": selected, "trend_requested": trend_requested}
-    session["stage"] = "suggested_idea_confirmation"
+    session["stage"] = None
+    prices = selected_evidence.prices
+    reviews = selected_evidence.reviews
+    sellers = selected_evidence.sellers
+    median_price = int(median(prices)) if prices else None
+    target = calculate_target_cny_price(
+        median_price, target_margin_percent=profile.get("target_margin_percent", 35)
+    ) if median_price else None
+    evidence_lines = [
+        f"Проверено карточек Kaspi: <b>{len(selected_evidence.products)}</b>",
+        f"Оценка открытой выборки: <b>{selected_evidence.score}/100</b>",
+    ]
+    if prices:
+        evidence_lines.append(f"Цена в выборке: <b>{min(prices):,}–{max(prices):,} ₸</b>")
+    if reviews:
+        evidence_lines.append(f"Отзывы: <b>{min(reviews)}–{max(reviews)}</b>")
+    if sellers:
+        evidence_lines.append(f"Продавцы: <b>{min(sellers)}–{max(sellers)}</b>")
     await _send(chat_id,
-        f"<b>Я бы начал с: {escape(selected['title_ru'])}</b>\n"
+        f"<b>Рекомендация для первичной проверки: {escape(selected['title_ru'])}</b>\n"
         f"Почему: {escape(selected['why_interesting'])}\n"
-        f"Сначала проверить: {escape(selected['risk_to_check'])}\n\n"
-        f"Китайский запрос: <code>{escape(selected['chinese_keywords'])}</code>\n\n"
-        "Это гипотеза, не обещание спроса. Напиши «да» или нажми кнопку — начну проверку Kaspi. "
-        "Можно также написать другое направление, название товара или сразу прислать ссылку.",
-        _keyboard([[("✅ Да, проверить", "suggestion_accept"), ("🔄 Другое", "suggestion_other")]])
+        f"Риск: {escape(selected['risk_to_check'])}\n\n"
+        + "\n".join(evidence_lines)
+        + (f"\nОриентир закупки для маржи {profile.get('target_margin_percent', 35):g}%: <b>до {target} ¥</b>" if target is not None else "")
+        + f"\n\nКитайский запрос: <code>{escape(selected['chinese_keywords'])}</code>\n"
+        "Это анализ открытой выборки, не данные о продажах Kaspi. Следующий шаг: пришли ссылку на поставщика — сравню цену, MOQ и экономику.",
+        _url_keyboard([[
+            {"text": "Открыть карточку Kaspi", "url": str(selected_evidence.products[0].source_url)},
+            {"text": "Искать на 1688", "url": build_search_urls(selected["chinese_keywords"], max_price_cny=target)["1688"]},
+        ]])
+    )
+    if trend_requested:
+        await _send_public_trend_signals(chat_id, selected["title_ru"])
+    await _send_supplier_leads(chat_id, selected, median_price)
+
+
+async def _send_supplier_leads(chat_id: int, idea: dict[str, Any], sale_price_kzt: int | None) -> None:
+    """Show supplier cards only when a source returned them; otherwise show links."""
+    await _send(chat_id, "Ищу предложения поставщиков по этому же запросу в Китае…")
+    try:
+        result = await get_china_data_provider().search_suppliers(
+            idea["title_ru"], idea["chinese_keywords"], sale_price_kzt=sale_price_kzt,
+        )
+    except Exception:
+        await _send(chat_id,
+            "Не смог получить предложения поставщиков сейчас. Ниже остаётся точный поисковый запрос — цены не буду придумывать.",
+            _url_keyboard([[{"text": "Искать на 1688", "url": build_search_urls(idea["chinese_keywords"])["1688"]}]]),
+        )
+        return
+
+    if result.live_items:
+        offers: list[str] = []
+        buttons: list[list[dict[str, str]]] = []
+        for item in result.live_items[:3]:
+            amount = item.price_cny if item.price_cny is not None else item.price_amount
+            price = f"{amount:g} {item.price_currency}" if amount is not None else "цену не указал"
+            supplier = f" · {escape(item.supplier_name)}" if item.supplier_name else ""
+            offers.append(f"• <b>{escape(item.title[:80])}</b>\n  {price} · MOQ {item.moq}{supplier}")
+            buttons.append([{"text": f"Открыть поставщика {len(buttons) + 1}", "url": item.detail_url}])
+        await _send(chat_id,
+            "<b>Предложения поставщиков:</b>\n" + "\n".join(offers) + "\n\n"
+            "Проверь модификацию, MOQ, вес и цену в карточке перед оплатой.",
+            _url_keyboard(buttons),
+        )
+        return
+
+    await _send(chat_id,
+        f"<b>Поставщик не отдал проверяемые цены.</b> {escape(result.data_note)}\n"
+        "Открываю точный запрос без выдуманных предложений.",
+        _url_keyboard([[{"text": "Искать на 1688", "url": result.search_urls["1688"]}]]),
     )
 
 
@@ -139,13 +242,12 @@ async def _handle_trend_request(chat_id: int, intent: SourcingIntent) -> None:
     await _suggest_starting_product(chat_id, intent.query, trend_requested=True)
 
 
-async def _run_trend_product_check(chat_id: int, title: str) -> None:
-    """Check public social signals for the chosen hypothesis before Kaspi analysis."""
-    import asyncio
+async def _send_public_trend_signals(chat_id: int, title: str) -> None:
+    """Report only public signals that could be fetched for the recommendation."""
     from app.telegram_search import fetch_telegram_trend_signal
     from app.tiktok import fetch_tiktok_trend_signal
 
-    await _send(chat_id, f"Проверяю публичные сигналы для <b>{escape(title)}</b>: YouTube, TikTok и Telegram…")
+    await _send(chat_id, f"Дополнительно проверяю публичные сигналы для <b>{escape(title)}</b>: YouTube, TikTok и Telegram…")
     youtube, tiktok, telegram = await asyncio.gather(
         fetch_youtube_trend_signal(title),
         fetch_tiktok_trend_signal(title),
@@ -159,9 +261,14 @@ async def _run_trend_product_check(chat_id: int, title: str) -> None:
     if telegram.status == "live":
         evidence.append(f"Telegram: {telegram.post_count} упоминаний в {len(telegram.channels_found)} каналах")
     if evidence:
-        await _send(chat_id, "<b>Публичные сигналы:</b>\n• " + "\n• ".join(evidence) + "\n\nДальше проверяю открытую выборку Kaspi.")
+        await _send(chat_id, "<b>Публичные тренд-сигналы:</b>\n• " + "\n• ".join(evidence))
     else:
-        await _send(chat_id, "Публичных сигналов недостаточно, чтобы назвать товар трендом. Проверяю Kaspi; это будет гипотеза, а не обещание спроса.")
+        await _send(chat_id, "Публичных тренд-сигналов недостаточно, чтобы назвать товар трендом. Рекомендация выше основана только на открытой выборке Kaspi.")
+
+
+async def _run_trend_product_check(chat_id: int, title: str) -> None:
+    """Check public social signals for the chosen hypothesis before Kaspi analysis."""
+    await _send_public_trend_signals(chat_id, title)
     await _run_market_scan(chat_id, title)
 
 
@@ -575,6 +682,16 @@ async def register_commands() -> None:
 
 
 async def handle_update(update: dict[str, Any]) -> None:
+    update_id = update.get("update_id")
+    if isinstance(update_id, int):
+        if update_id in _processed_updates:
+            return
+        _processed_updates.add(update_id)
+        # Telegram update IDs increase monotonically; keeping a short recent
+        # window prevents retries from duplicating messages without unbounded RAM.
+        if len(_processed_updates) > 1_000:
+            _processed_updates.clear()
+            _processed_updates.add(update_id)
     message = update.get("message") or update.get("callback_query", {}).get("message")
     if not message:
         return
@@ -667,6 +784,14 @@ async def handle_update(update: dict[str, Any]) -> None:
         await _handle_product_input(chat_id, incoming)
         return
     await _home(chat_id)
+
+
+async def process_update_safely(update: dict[str, Any]) -> None:
+    """Keep webhook acknowledgement fast even when market research takes time."""
+    try:
+        await handle_update(update)
+    except Exception:
+        logger.exception("Telegram update processing failed")
 
 
 

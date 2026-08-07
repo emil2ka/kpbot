@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -32,7 +33,7 @@ from app.services import (
     evaluate_hard_filters,
     generate_chinese_keywords,
 )
-from app.telegram import handle_update, register_commands
+from app.telegram import process_update_safely, register_commands
 from app.trends import build_trend_report
 from app.youtube_trends import fetch_youtube_trend_signal
 
@@ -96,7 +97,6 @@ async def kaspi_insight(request: ScanRequest, _: None = Depends(require_api_key)
     return build_product_insight(product)
 
 
-import asyncio
 from app.tiktok import TikTokTrendSignal, fetch_tiktok_trend_signal
 from app.telegram_search import TelegramTrendSignal, fetch_telegram_trend_signal
 
@@ -286,6 +286,10 @@ async def sourcing_niche_trends(category: str = "все категории", _: 
 async def telegram_webhook(request: Request) -> None:
     settings = get_settings()
     secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if settings.telegram_configured and not settings.telegram_webhook_secret:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Telegram webhook secret is not configured")
     if settings.telegram_webhook_secret and secret != settings.telegram_webhook_secret:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Telegram webhook secret")
-    await handle_update(await request.json())
+    # Trend and supplier research can take several network calls. Acknowledge
+    # Telegram immediately, then continue processing in this service process.
+    asyncio.create_task(process_update_safely(await request.json()))

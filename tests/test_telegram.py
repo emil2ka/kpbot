@@ -18,6 +18,7 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         telegram._sessions.clear()
         telegram._local_items.clear()
+        telegram._processed_updates.clear()
         self.messages = []
 
     async def capture_call(self, method, payload):
@@ -46,12 +47,14 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
                 ChinaIdea(title_ru="Контейнеры", chinese_keywords="收纳盒", why_interesting="Понятные", risk_to_check="Материал"),
             ],
         )
-        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram.generate_china_ideas", new=AsyncMock(return_value=research)), patch("app.telegram.search_products", new=AsyncMock()) as search:
+        product = KaspiProduct(source_url="https://kaspi.kz/shop/p/test-1/", title="Органайзер", price_kzt=8990, review_count=42, seller_count=2, rating=4.7)
+        with patch("app.telegram._call", new=self.capture_call), patch("app.telegram.classify_sourcing_request", new=AsyncMock(return_value=SourcingIntent(kind="idea_discovery", query="что то для дома"))), patch("app.telegram.generate_china_ideas", new=AsyncMock(return_value=research)), patch("app.telegram.search_products", new=AsyncMock(return_value=[product])) as search, patch("app.telegram._send_supplier_leads", new=AsyncMock()) as supplier_leads:
             await telegram.handle_update(message_update(42, "что то для дома"))
-        search.assert_not_awaited()
+        self.assertEqual(search.await_count, 3)
         self.assertEqual(telegram._sessions[42]["context"]["idea"]["title_ru"], "Органайзер для ящиков")
-        self.assertEqual(telegram._sessions[42]["stage"], "suggested_idea_confirmation")
-        self.assertTrue(any("Я бы начал с" in message["text"] for message in self.messages))
+        self.assertIsNone(telegram._sessions[42]["stage"])
+        self.assertTrue(any("Рекомендация для первичной проверки" in message["text"] for message in self.messages))
+        supplier_leads.assert_awaited_once_with(42, telegram._sessions[42]["context"]["idea"], 8990)
 
     async def test_yes_after_hypothesis_searches_the_suggested_product(self):
         telegram._sessions[42] = {
@@ -88,6 +91,13 @@ class TestTelegramUserJourneys(unittest.IsolatedAsyncioTestCase):
         with patch("app.telegram._call", new=self.capture_call), patch("app.telegram._run_trend_product_check", new=AsyncMock()) as trend_check:
             await telegram.handle_update(message_update(42, "да"))
         trend_check.assert_awaited_once_with(42, "Органайзер для ящиков")
+
+    async def test_duplicate_telegram_update_is_ignored(self):
+        update = message_update(42, "/start") | {"update_id": 999}
+        with patch("app.telegram._call", new=self.capture_call):
+            await telegram.handle_update(update)
+            await telegram.handle_update(update)
+        self.assertEqual(len(self.messages), 1)
 
     async def test_profile_margin_accepts_a_plain_number(self):
         telegram._sessions[42] = {"stage": "profile_margin", "profile": {"target_margin_percent": 35}, "ideas": [], "context": {}}

@@ -3,7 +3,7 @@ import unittest
 
 from bs4 import BeautifulSoup
 
-from app.kaspi import KaspiExtractionError, _extract_json_ld, _is_kaspi_host, _number, fetch_product
+from app.kaspi import KaspiExtractionError, _extract_json_ld, _extract_kaspi_product_urls, _is_kaspi_host, _number, fetch_product
 
 
 class TestKaspiSafetyAndParsing(unittest.TestCase):
@@ -41,6 +41,17 @@ class TestKaspiSafetyAndParsing(unittest.TestCase):
     def test_number_parser_handles_kaspi_formatting(self):
         self.assertEqual(_number("8 990 ₸"), 8990)
         self.assertIsNone(_number("нет данных"))
+
+    def test_extracts_product_urls_from_direct_and_search_redirect_links(self):
+        html = '''
+        <a href="https://kaspi.kz/shop/p/test-a-1/?source=search">one</a>
+        <a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fkaspi.kz%2Fshop%2Fp%2Ftest-b-2%2F">two</a>
+        https://kaspi.kz/shop/p/test-a-1/
+        '''
+        self.assertEqual(
+            _extract_kaspi_product_urls(html, limit=5),
+            ["https://kaspi.kz/shop/p/test-a-1/", "https://kaspi.kz/shop/p/test-b-2/"],
+        )
 
 
 if __name__ == "__main__":

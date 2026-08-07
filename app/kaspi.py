@@ -71,6 +71,48 @@ def _extract_meta(soup: BeautifulSoup, name: str) -> str | None:
     return tag.get("content") if tag and tag.get("content") else None
 
 
+def _extract_kaspi_product_urls(search_html: str, limit: int) -> list[str]:
+    """Extract and de-duplicate public Kaspi product URLs from a search page."""
+    urls: list[str] = []
+
+    def add(candidate: str) -> None:
+        match = re.search(r"https?://(?:www\.)?kaspi\.kz/shop/p/[^?&#\"'\s]+", candidate)
+        if not match:
+            return
+        url = match.group(0)
+        if url not in urls:
+            urls.append(url)
+
+    for candidate in re.findall(r"https?://(?:www\.)?kaspi\.kz/shop/p/[^?&#\"'\s]+", search_html):
+        add(candidate)
+        if len(urls) >= limit:
+            return urls
+
+    for href in BeautifulSoup(search_html, "html.parser").select("a[href]"):
+        candidate = unescape(href.get("href") or "")
+        if "uddg=" in candidate:
+            candidate = unquote(parse_qs(urlparse(candidate).query).get("uddg", [""])[0])
+        add(candidate)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+async def _fetch_ddg_results(client: httpx.AsyncClient, query: str) -> str:
+    """Use DuckDuckGo HTML as one bounded public discovery source."""
+    response = await client.post("https://html.duckduckgo.com/html/", data={"q": query})
+    if response.status_code == 200:
+        return response.text
+    fallback = await client.get("https://html.duckduckgo.com/html/?q=" + quote_plus(query))
+    return fallback.text if fallback.status_code == 200 else ""
+
+
+async def _fetch_bing_results(client: httpx.AsyncClient, query: str) -> str:
+    """Independent public fallback when one search page is temporarily empty."""
+    response = await client.get("https://www.bing.com/search?q=" + quote_plus(query))
+    return response.text if response.status_code == 200 else ""
+
+
 async def fetch_product(url: str) -> KaspiProduct:
     """Fetch and deeply parse a Kaspi.kz product URL using 5 resilient fallback strategies."""
     try:
@@ -95,6 +137,8 @@ async def fetch_product(url: str) -> KaspiProduct:
 
     if response.status_code != 200:
         raise KaspiExtractionError(f"Kaspi вернул HTTP {response.status_code}")
+    if not _is_kaspi_host(response.url.host):
+        raise KaspiExtractionError("Kaspi перенаправил на недопустимый адрес")
 
     html_text = response.text
     soup = BeautifulSoup(html_text, "html.parser")
@@ -192,39 +236,28 @@ async def search_products(query: str, *, limit: int = 5) -> list[KaspiProduct]:
         raise KaspiExtractionError("Напишите, какой товар или категорию искать")
 
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "ru-RU,ru;q=0.9"}
-    html_text = ""
+    query_with_site = f"site:kaspi.kz/shop/p {cleaned}"
     try:
         async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=15.0) as client:
-            resp = await client.post("https://html.duckduckgo.com/html/", data={"q": f"site:kaspi.kz/shop/p {cleaned}"})
-            if resp.status_code == 200:
-                html_text = resp.text
-            else:
-                search_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(f"site:kaspi.kz/shop/p {cleaned}")
-                resp2 = await client.get(search_url)
-                html_text = resp2.text
+            pages = await gather(
+                _fetch_ddg_results(client, query_with_site),
+                _fetch_bing_results(client, query_with_site),
+                return_exceptions=True,
+            )
     except Exception as exc:
         raise KaspiExtractionError("Не удалось найти открытые карточки Kaspi") from exc
 
     urls: list[str] = []
-    # Extract URLs from HTML anchor tags and raw regex matches
-    for candidate in re.findall(r"https?://(?:www\.)?kaspi\.kz/shop/p/[^?&#\"'\s]+", html_text):
-        if candidate not in urls:
-            urls.append(candidate)
-        if len(urls) >= limit:
-            break
-
-    if not urls:
-        for href in BeautifulSoup(html_text, "html.parser").select("a[href]"):
-            candidate = unescape(href.get("href") or "")
-            if "uddg=" in candidate:
-                candidate = unquote(parse_qs(urlparse(candidate).query).get("uddg", [""])[0])
-            match = re.search(r"https?://(?:www\.)?kaspi\.kz/shop/p/[^?&#\"']+", candidate)
-            if match:
-                url = match.group(0)
-                if url not in urls:
-                    urls.append(url)
+    for page in pages:
+        if isinstance(page, Exception):
+            continue
+        for url in _extract_kaspi_product_urls(page, limit):
+            if url not in urls:
+                urls.append(url)
             if len(urls) >= limit:
                 break
+        if len(urls) >= limit:
+            break
 
     if not urls:
         raise KaspiExtractionError("По этому запросу не нашёл открытых карточек Kaspi")
