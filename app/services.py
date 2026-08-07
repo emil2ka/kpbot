@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Literal
 
@@ -6,7 +7,7 @@ from pydantic import BaseModel
 
 from app.china import normalize_search_keywords
 from app.config import get_settings
-from app.models import ChinaIdeaResearch, KaspiProduct, ProductInsight, RiskAssessment
+from app.models import ChinaIdea, ChinaIdeaResearch, KaspiProduct, ProductInsight, RiskAssessment
 
 
 class XAIServiceError(RuntimeError):
@@ -292,13 +293,27 @@ def _get_fallback_ideas(request: str, count: int = 3) -> ChinaIdeaResearch:
     return ChinaIdeaResearch(interpretation=interpretation, ideas=selected)
 
 
+import time
+
+_IDEAS_CACHE: dict[str, tuple[float, ChinaIdeaResearch]] = {}
+
+
 async def generate_china_ideas(request: str, count: int = 3) -> ChinaIdeaResearch | None:
     """Generate sourcing hypotheses and searchable Chinese queries (from 1 to 10 ideas)."""
     s = get_settings()
     num_ideas = max(1, min(10, count))
 
+    cache_key = f"{request.strip().lower()}:{num_ideas}"
+    now = time.time()
+    if cache_key in _IDEAS_CACHE:
+        ts, cached = _IDEAS_CACHE[cache_key]
+        if now - ts < 900:
+            return cached
+
     if not s.xai_configured:
-        return _get_fallback_ideas(request, num_ideas)
+        res = _get_fallback_ideas(request, num_ideas)
+        _IDEAS_CACHE[cache_key] = (now, res)
+        return res
 
     prompt = (
         f"Ты исследователь товаров для перепродажи в Казахстане. Сформируй ровно {num_ideas} гипотез "
@@ -311,16 +326,23 @@ async def generate_china_ideas(request: str, count: int = 3) -> ChinaIdeaResearc
         "\"risk_to_check\":\"...\"}]}.\n\nЗапрос пользователя: " + request
     )
     try:
-        async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
-            response = await client.chat.completions.create(
-                model=s.xai_model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.45,
-            )
-        research = ChinaIdeaResearch.model_validate_json(response.choices[0].message.content or "{}")
+        async def _call_xai():
+            async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
+                response = await client.chat.completions.create(
+                    model=s.xai_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    temperature=0.45,
+                )
+            return response.choices[0].message.content or "{}"
+
+        raw_json = await asyncio.wait_for(_call_xai(), timeout=2.0)
+        research = ChinaIdeaResearch.model_validate_json(raw_json)
         for idea in research.ideas:
             idea.chinese_keywords = normalize_search_keywords(idea.chinese_keywords)
+        _IDEAS_CACHE[cache_key] = (now, research)
         return research
     except Exception:
-        return _get_fallback_ideas(request, num_ideas)
+        res = _get_fallback_ideas(request, num_ideas)
+        _IDEAS_CACHE[cache_key] = (now, res)
+        return res

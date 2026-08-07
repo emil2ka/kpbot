@@ -282,11 +282,23 @@ async def _search_via_http_engines(q: str, limit: int) -> list[KaspiProduct]:
     return []
 
 
+import time
+
+_SEARCH_CACHE: dict[str, tuple[float, list[KaspiProduct]]] = {}
+
+
 async def search_products(query: str, *, limit: int = 5) -> list[KaspiProduct]:
     """Find live Kaspi.kz product cards via parallel Playwright DOM and HTTP search engines."""
     cleaned = " ".join(query.split())[:120]
     if not cleaned:
         raise KaspiExtractionError("Напишите, какой товар или категорию искать")
+
+    cache_key = f"{cleaned.lower()}:{limit}"
+    now = time.time()
+    if cache_key in _SEARCH_CACHE:
+        ts, cached = _SEARCH_CACHE[cache_key]
+        if now - ts < 900:
+            return cached
 
     candidates = _build_query_candidates(cleaned)
 
@@ -299,6 +311,7 @@ async def search_products(query: str, *, limit: int = 5) -> list[KaspiProduct]:
         )
         for res in results:
             if isinstance(res, list) and res:
+                _SEARCH_CACHE[cache_key] = (now, res)
                 return res
 
     raise KaspiExtractionError("По этому запросу не нашёл открытых карточек Kaspi")
