@@ -222,12 +222,63 @@ async def generate_global_search_keywords(title_ru: str) -> str:
         return title_ru
 
 
+def _get_fallback_ideas(request: str, count: int = 3) -> ChinaIdeaResearch:
+    """Return realistic, proven e-commerce hypotheses when AI is unavailable or fails."""
+    req_lower = request.lower()
+    num_ideas = max(1, min(10, count))
+
+    home_catalog = [
+        ChinaIdea(title_ru="Органайзер для одежды и текстиля", chinese_keywords="衣物收纳盒 布艺", why_interesting="Компактный, высокий спрос на порядок дома", risk_to_check="Качество швов и матерьял"),
+        ChinaIdea(title_ru="Корзина для белья складная", chinese_keywords="折叠脏衣篮", why_interesting="Легкий вес, дешевая доставка карго", risk_to_check="Прочность каркаса"),
+        ChinaIdea(title_ru="Настенный держатель без сверления", chinese_keywords="免打孔挂钩置物架", why_interesting="Легкий монтаж, универсальный товар", risk_to_check="Надежность клеевого слоя"),
+        ChinaIdea(title_ru="Уплотнительная лента для окон и дверей", chinese_keywords="门窗密封条 自粘", why_interesting="Сезонный товар высокой маржинальности", risk_to_check="Толщина и липкость"),
+        ChinaIdea(title_ru="Защитные накладки на ножки мебели", chinese_keywords="家具静音防滑垫脚套", why_interesting="Дешевая закупка, продается наборами", risk_to_check="Размерность комплектности"),
+    ]
+    kitchen_catalog = [
+        ChinaIdea(title_ru="Органайзер для кухонных моющих средств", chinese_keywords="厨房水槽沥水架", why_interesting="Постоянен спрос, упорядочивает мойку", risk_to_check="Коррозиестойкость покрытия"),
+        ChinaIdea(title_ru="Подставка для крышек кастрюль и сковород", chinese_keywords="锅盖架厨房置物架", why_interesting="Разгружает кухонные шкафы", risk_to_check="Устойчивость конструкции"),
+        ChinaIdea(title_ru="Контейнер для круп с дозатором", chinese_keywords="五谷杂粮按压储藏罐", why_interesting="Визуально эстетичный, высокий чек", risk_to_check="Целостность при транспортировке"),
+        ChinaIdea(title_ru="Диспенсер для пленки и фольги", chinese_keywords="保鲜膜切割收纳盒", why_interesting="Удобство в быту, вирусный товар", risk_to_check="Острота и механизм лезвия"),
+        ChinaIdea(title_ru="Набор силиконовых растягивающихся крышек", chinese_keywords="硅胶保鲜盖6件套", why_interesting="Эко-альтернатива пленке, частая покупка", risk_to_check="Эластичность силикона"),
+    ]
+    auto_catalog = [
+        ChinaIdea(title_ru="Автомобильный держатель для телефона на дефлектор", chinese_keywords="车载出风口手机支架", why_interesting="Массовый спрос у всех водителей", risk_to_check="Надежность фиксатора"),
+        ChinaIdea(title_ru="Органайзер на спинку сиденья авто", chinese_keywords="车载背收纳袋", why_interesting="Удобно для семей и путешествий", risk_to_check="Прочность креплений"),
+        ChinaIdea(title_ru="Щетка-скребок для мытья стекол и кузова", chinese_keywords="洗车伸缩擦车刷", why_interesting="Высокая оборачиваемость в автотоварах", risk_to_check="Качество ворса"),
+        ChinaIdea(title_ru="Подушка с эффектом памяти под шею в авто", chinese_keywords="汽车记忆棉头枕", why_interesting="Комфорт при долгой езде, хороший чек", risk_to_check="Плотность наполнителя"),
+        ChinaIdea(title_ru="Мини-мусорка в салон автомобиля", chinese_keywords="车载便携小垃圾桶", why_interesting="Компактный аксессуар для чистоты", risk_to_check="Плотность крышки"),
+    ]
+    general_catalog = [
+        ChinaIdea(title_ru="Органайзер для кабелей и проводов", chinese_keywords="理线器桌面线缆收纳", why_interesting="Нужен каждому за рабочим столом", risk_to_check="Комплектация и клейкость"),
+        ChinaIdea(title_ru="Чехол-сумка для гаджетов и зарядных устройств", chinese_keywords="数码配件便携收纳包", why_interesting="Отличный подарок и практичный аксессуар", risk_to_check="Качество молнии"),
+        ChinaIdea(title_ru="Портативный ультразвуковой увлажнитель", chinese_keywords="便携式迷你加湿器", why_interesting="Компактный, стильный внешний вид", risk_to_check="Герметичность колбы"),
+    ]
+
+    if any(k in req_lower for k in ("кухн", "посуд", "еда", "готовка")):
+        pool = kitchen_catalog + home_catalog
+        interpretation = "Определил категорию «Товары для кухни». Подобрал практичные компактные товары."
+    elif any(k in req_lower for k in ("авто", "машин", "салон", "водитель")):
+        pool = auto_catalog + general_catalog
+        interpretation = "Определил категорию «Автотовары». Подобрал востребованные аксессуары для салона."
+    elif any(k in req_lower for k in ("дом", "уют", "спальн", "комнат", "быт")):
+        pool = home_catalog + kitchen_catalog
+        interpretation = "Определил категорию «Товары для дома». Подобрал ходовые органайзеры и аксессуары."
+    else:
+        pool = home_catalog + kitchen_catalog + auto_catalog + general_catalog
+        interpretation = "Подобрал проверенные компактные товары для старта продаж."
+
+    selected = pool[:num_ideas]
+    return ChinaIdeaResearch(interpretation=interpretation, ideas=selected)
+
+
 async def generate_china_ideas(request: str, count: int = 3) -> ChinaIdeaResearch | None:
     """Generate sourcing hypotheses and searchable Chinese queries (from 1 to 10 ideas)."""
     s = get_settings()
-    if not s.xai_configured:
-        return None
     num_ideas = max(1, min(10, count))
+
+    if not s.xai_configured:
+        return _get_fallback_ideas(request, num_ideas)
+
     prompt = (
         f"Ты исследователь товаров для перепродажи в Казахстане. Сформируй ровно {num_ideas} гипотез "
         "товара для поиска у китайских поставщиков. Пользователь может назвать категорию, бюджет, "
@@ -251,4 +302,4 @@ async def generate_china_ideas(request: str, count: int = 3) -> ChinaIdeaResearc
             idea.chinese_keywords = normalize_search_keywords(idea.chinese_keywords)
         return research
     except Exception:
-        return None
+        return _get_fallback_ideas(request, num_ideas)
