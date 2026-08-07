@@ -30,24 +30,25 @@ def _fallback_sourcing_intent(message: str) -> SourcingIntent:
 
 
 async def classify_sourcing_request(message: str) -> SourcingIntent:
-    """Understand the user's goal before choosing a sourcing workflow.
+    """Understand the user's goal via AI before choosing a sourcing workflow.
 
-    This keeps conversational requests such as "проверь, что в тренде" from
-    being sent verbatim to a Kaspi product search.
+    Corrects spelling typos and maps broad category terms (e.g. "аксессуары для телефона",
+    "что-то для дома", "автотовары") to `idea_discovery` so AI generates specific product options.
     """
     s = get_settings()
     clean_message = " ".join(message.split())[:500]
     if not s.xai_configured:
         return _fallback_sourcing_intent(clean_message)
     prompt = (
-        "Определи намерение пользователя для помощника по товарам Kaspi и закупкам из Китая. "
-        "Верни строго JSON: {\"kind\":\"product_search|idea_discovery|trend_discovery|question\",\"query\":\"...\"}. "
-        "product_search — пользователь назвал конкретный товар для поиска; "
-        "idea_discovery — просит подобрать товар или направление; "
-        "trend_discovery — просит сначала проверить, что сейчас в тренде/популярно, затем предложить товар; "
-        "question — общий вопрос, не требующий поиска карточек. "
-        "В query помести короткий поисковый запрос или исходную просьбу.\n\n"
-        f"Пользователь: {clean_message}"
+        "Ты аналитик e-commerce и товарного бизнеса. Исправь опечатки в запросе пользователя "
+        "и определи лучшее намерение для поиска товаров Kaspi и поставок из Китая.\n"
+        "Правила классификации:\n"
+        "1. idea_discovery — пользователь навал КАТЕГОРИЮ или ОБЩЕЕ направление (например: 'аксессуары для телефона', 'что-то для дома', 'товары для авто', 'электроника', 'подарки'). В query верни исправленную категорию.\n"
+        "2. trend_discovery — просит проверить публичные тренд-сигналы или спрос (например: 'что сейчас в тренде', 'популярные товары').\n"
+        "3. product_search — пользователь назвал КОНКРЕТНЫЙ ЕДИНИЧНЫЙ товар (например: 'держатель для телефона на дефлектор', 'сушилка для посуды', 'магнитный кабель'). В query верни название конкретного товара без опечаток.\n"
+        "4. question — общий вопрос по бизнесу, не требующий поиска карточек.\n\n"
+        "Верни строго JSON: {\"kind\":\"product_search|idea_discovery|trend_discovery|question\",\"query\":\"исправленный запрос без опечаток\"}.\n\n"
+        f"Запрос пользователя: {clean_message}"
     )
     try:
         async with AsyncOpenAI(api_key=s.xai_api_key, base_url="https://api.x.ai/v1") as client:
