@@ -40,13 +40,27 @@ def _number(value: str | None) -> int | None:
 
 
 def _extract_json_ld(soup: BeautifulSoup) -> dict:
+    """Return the first Product schema, including products stored in @graph."""
+    def find_product(value: object) -> dict | None:
+        if isinstance(value, list):
+            for item in value:
+                product = find_product(item)
+                if product:
+                    return product
+        elif isinstance(value, dict):
+            schema_type = value.get("@type")
+            types = schema_type if isinstance(schema_type, list) else [schema_type]
+            if "Product" in types:
+                return value
+            return find_product(value.get("@graph", []))
+        return None
+
     for tag in soup.select('script[type="application/ld+json"]'):
         try:
             payload = json.loads(tag.string or "")
-            entries = payload if isinstance(payload, list) else [payload]
-            for entry in entries:
-                if entry.get("@type") == "Product":
-                    return entry
+            product = find_product(payload)
+            if product:
+                return product
         except (json.JSONDecodeError, AttributeError):
             continue
     return {}
@@ -176,26 +190,42 @@ async def search_products(query: str, *, limit: int = 5) -> list[KaspiProduct]:
     cleaned = " ".join(query.split())[:120]
     if not cleaned:
         raise KaspiExtractionError("Напишите, какой товар или категорию искать")
-    search_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(f"site:kaspi.kz/shop/p {cleaned}")
+
+    headers = {"User-Agent": USER_AGENT, "Accept-Language": "ru-RU,ru;q=0.9"}
+    html_text = ""
     try:
-        async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=15.0) as client:
-            response = await client.get(search_url)
-            response.raise_for_status()
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=15.0) as client:
+            resp = await client.post("https://html.duckduckgo.com/html/", data={"q": f"site:kaspi.kz/shop/p {cleaned}"})
+            if resp.status_code == 200:
+                html_text = resp.text
+            else:
+                search_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(f"site:kaspi.kz/shop/p {cleaned}")
+                resp2 = await client.get(search_url)
+                html_text = resp2.text
     except Exception as exc:
         raise KaspiExtractionError("Не удалось найти открытые карточки Kaspi") from exc
 
     urls: list[str] = []
-    for href in BeautifulSoup(response.text, "html.parser").select("a[href]"):
-        candidate = unescape(href.get("href") or "")
-        if "uddg=" in candidate:
-            candidate = unquote(parse_qs(urlparse(candidate).query).get("uddg", [""])[0])
-        match = re.search(r"https?://(?:www\.)?kaspi\.kz/shop/p/[^?&#\"']+", candidate)
-        if match:
-            url = match.group(0)
-            if url not in urls:
-                urls.append(url)
+    # Extract URLs from HTML anchor tags and raw regex matches
+    for candidate in re.findall(r"https?://(?:www\.)?kaspi\.kz/shop/p/[^?&#\"'\s]+", html_text):
+        if candidate not in urls:
+            urls.append(candidate)
         if len(urls) >= limit:
             break
+
+    if not urls:
+        for href in BeautifulSoup(html_text, "html.parser").select("a[href]"):
+            candidate = unescape(href.get("href") or "")
+            if "uddg=" in candidate:
+                candidate = unquote(parse_qs(urlparse(candidate).query).get("uddg", [""])[0])
+            match = re.search(r"https?://(?:www\.)?kaspi\.kz/shop/p/[^?&#\"']+", candidate)
+            if match:
+                url = match.group(0)
+                if url not in urls:
+                    urls.append(url)
+            if len(urls) >= limit:
+                break
+
     if not urls:
         raise KaspiExtractionError("По этому запросу не нашёл открытых карточек Kaspi")
 

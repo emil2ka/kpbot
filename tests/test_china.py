@@ -31,6 +31,10 @@ class TestChinaIntegration(unittest.TestCase):
         self.assertEqual(detect_platform(pdd_snippet), "Pinduoduo")
         self.assertEqual(extract_item_id(pdd_snippet), "10293848")
 
+    def test_extract_url_drops_share_message_punctuation(self):
+        snippet = "Смотри: https://detail.1688.com/offer/678912345.html。"
+        self.assertEqual(extract_url_from_text(snippet), "https://detail.1688.com/offer/678912345.html")
+
     def test_extract_item_id(self):
         self.assertEqual(extract_item_id("https://detail.1688.com/offer/678912345.html"), "678912345")
         self.assertEqual(extract_item_id("https://item.taobao.com/item.htm?id=123456789"), "123456789")

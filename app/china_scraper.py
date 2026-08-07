@@ -9,7 +9,7 @@ import re
 import httpx
 from bs4 import BeautifulSoup
 
-from app.china import extract_url_from_text, parse_china_url
+from app.china import extract_price_hint, extract_url_from_text, parse_china_url
 from app.models import ChinaDeepAnalysisResult, PriceTier, SKUVariant, SupplierProfile
 
 
@@ -26,7 +26,10 @@ async def deep_extract_china_product(raw_text_or_url: str) -> ChinaDeepAnalysisR
     if parse_basic.extracted_image_url:
         images.append(parse_basic.extracted_image_url)
 
-    price_cny: float | None = None
+    # A price in a marketplace share message is useful even when the landing
+    # page requires sign-in. It remains explicitly labelled as a hint below.
+    price_cny = extract_price_hint(raw_text_or_url)
+    price_from_page = False
     price_tiers: list[PriceTier] = []
     sku_variants: list[SKUVariant] = []
     supplier = SupplierProfile()
@@ -69,6 +72,7 @@ async def deep_extract_china_product(raw_text_or_url: str) -> ChinaDeepAnalysisR
                 if price_match:
                     try:
                         price_cny = float(price_match.group(1))
+                        price_from_page = True
                     except ValueError:
                         pass
 
@@ -78,6 +82,7 @@ async def deep_extract_china_product(raw_text_or_url: str) -> ChinaDeepAnalysisR
                     if m_cny:
                         try:
                             price_cny = float(m_cny.group(1))
+                            price_from_page = True
                         except ValueError:
                             pass
 
@@ -99,6 +104,8 @@ async def deep_extract_china_product(raw_text_or_url: str) -> ChinaDeepAnalysisR
 
     if price_cny is None:
         data_notes.append("Цена не извлечена: страница может требовать авторизации или перехода в приложение.")
+    elif not price_from_page:
+        data_notes.append("Цена взята из текста, которым поделились; подтвердите её на странице поставщика.")
     if not price_tiers:
         data_notes.append("Ступени MOQ не извлечены автоматически с публичной страницы.")
     if not supplier.company_name:

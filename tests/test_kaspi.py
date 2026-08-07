@@ -30,6 +30,14 @@ class TestKaspiSafetyAndParsing(unittest.TestCase):
         self.assertEqual(_number(str(product["offers"]["price"])), 8990)
         self.assertEqual(_number(str(product["aggregateRating"]["reviewCount"])), 123)
 
+    def test_extracts_product_json_ld_from_graph(self):
+        soup = BeautifulSoup(
+            '''<script type="application/ld+json">{"@context":"https://schema.org","@graph":[
+            {"@type":"WebPage"},{"@type":["Product","Thing"],"name":"Термокружка"}]}</script>''',
+            "html.parser",
+        )
+        self.assertEqual(_extract_json_ld(soup)["name"], "Термокружка")
+
     def test_number_parser_handles_kaspi_formatting(self):
         self.assertEqual(_number("8 990 ₸"), 8990)
         self.assertIsNone(_number("нет данных"))

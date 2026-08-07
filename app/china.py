@@ -27,7 +27,9 @@ _PATTERNS = [
 def extract_url_from_text(text: str) -> str:
     """Extract clean URL from noisy mobile app share snippet (e.g. from PDD or 1688 app)."""
     match = re.search(r"https?://[^\s<>\"']+", text)
-    return match.group(0) if match else text.strip()
+    # Mobile share messages often put punctuation immediately after a link.
+    # It is not part of the URL and otherwise breaks canonicalisation/fetching.
+    return match.group(0).rstrip(".,;:!?)]}，。！？、】【") if match else text.strip()
 
 
 def extract_price_hint(text: str) -> float | None:

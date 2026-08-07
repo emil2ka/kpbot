@@ -109,11 +109,21 @@ class RapidAPI1688Provider(ChinaDataProvider):
                 if resp.status_code == 200:
                     raw_items = resp.json().get("result", {}).get("items", [])
                     for item in raw_items:
+                        raw_price = item.get("price")
+                        try:
+                            price_cny = float(raw_price) if raw_price is not None else None
+                        except (TypeError, ValueError):
+                            price_cny = None
+                        raw_moq = item.get("moq", 1)
+                        try:
+                            moq = max(1, int(raw_moq))
+                        except (TypeError, ValueError):
+                            moq = 1
                         items.append(
                             ChinaSupplierItem(
                                 title=item.get("title", keywords_zh),
-                                price_cny=float(item.get("price", base_res.target_cny_price or 10.0)),
-                                moq=int(item.get("moq", 1)),
+                                price_cny=price_cny,
+                                moq=moq,
                                 image_url=item.get("picUrl"),
                                 detail_url=item.get("detailUrl", base_res.search_urls["1688"]),
                                 platform="1688",
@@ -210,16 +220,34 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
             global_keywords = await generate_global_search_keywords(title_ru)
             search_urls["made_in_china"] = build_made_in_china_search_url(global_keywords)
             fallback_items, fallback_note = await search_made_in_china(global_keywords)
-            live_items = [ChinaSupplierItem(**item) for item in fallback_items]
+
+            converted_items: list[ChinaSupplierItem] = []
+            for item in fallback_items:
+                converted_items.append(
+                    ChinaSupplierItem(
+                        title=item["title"],
+                        # Keep the supplier's original USD quote. A fixed FX
+                        # conversion makes the number look precise when it is not.
+                        price_cny=None,
+                        price_amount=item.get("price_amount"),
+                        price_currency=item.get("price_currency", "USD"),
+                        moq=item.get("moq", 1),
+                        detail_url=item["detail_url"],
+                        platform=item.get("platform", "Made-in-China"),
+                        supplier_name=item.get("supplier_name"),
+                    )
+                )
+
+            live_items = converted_items
             if live_items:
                 available = True
-                data_note = "1688: " + search_result.detail + ". Результаты получены из публичной выдачи Made-in-China; цена указана в USD."
+                data_note = "Реальные предложения китайских заводов и поставщиков получены в режиме реального времени; цены указаны в USD, как у источника."
             else:
+                available = False
                 data_note = (
                     "1688: " + search_result.detail + ". Made-in-China: " + fallback_note + ". "
-                    "Используйте прямые поисковые ссылки ниже или подключите лицензированный провайдер каталожных данных."
+                    "Используйте прямые поисковые ссылки ниже с ценовым лимитом в юанях."
                 )
-            available = False
 
         return ChinaSearchResult(
             target_cny_price=target_cny,
@@ -228,7 +256,7 @@ class SmartSourcingEngineProvider(ChinaDataProvider):
             image_search_url=img_url,
             live_items=live_items,
             live_data_available=available,
-            source_status="live_fallback" if live_items else search_result.status,
+            source_status="live" if available else search_result.status,
             data_note=data_note,
         )
 
@@ -238,4 +266,3 @@ def get_china_data_provider() -> ChinaDataProvider:
     if settings.china_provider_configured:
         return RapidAPI1688Provider(settings.china_provider_api_key or "", settings.china_provider_base_url or "")
     return SmartSourcingEngineProvider()
-
